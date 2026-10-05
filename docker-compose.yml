@@ -1,0 +1,19 @@
+services:
+  token2oauth:
+    build: .
+    container_name: token2oauth
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:2030:2030"
+    environment:
+      TOKEN2OAUTH_CONFIG_DIR: /data
+      TOKEN2OAUTH_HOST: 0.0.0.0
+      TOKEN2OAUTH_PORT: 2030
+      TOKEN2OAUTH_BASE_PATH: /token2oauth
+      # TOKEN2OAUTH_PUBLIC_BASE_URL: https://node.tailnet.ts.net/token2oauth
+      # TOKEN2OAUTH_UPSTREAM_URL: https://provider.example.com/mcp
+    volumes:
+      - token2oauth-data:/data
+
+volumes:
+  token2oauth-data:

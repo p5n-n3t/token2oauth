@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible Token2OAuth problem
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Please redact bearer tokens, OAuth codes, access tokens, refresh tokens, and passwords."
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: token2oauth doctor output
+      render: text
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, Tailscale version, installation method.

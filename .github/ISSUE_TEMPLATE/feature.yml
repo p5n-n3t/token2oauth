@@ -1,0 +1,16 @@
+name: Feature request
+description: Propose a provider adapter, routing strategy, or gateway feature
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case
+      description: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior

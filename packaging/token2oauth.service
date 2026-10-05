@@ -1,0 +1,14 @@
+[Unit]
+Description=Token2OAuth MCP OAuth Gateway
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/token2oauth serve --host 127.0.0.1 --port 2030
+Restart=on-failure
+RestartSec=3
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
