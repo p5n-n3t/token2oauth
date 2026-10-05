@@ -257,5 +257,5 @@ Useful commands:
   token2oauth tailscale status
 
 If ~/.local/bin is not on PATH:
-  export PATH="\\$HOME/.local/bin:\\$PATH"
+  export PATH="\$HOME/.local/bin:\$PATH"
 EOF

@@ -8,7 +8,7 @@ Do not put live provider credentials, OAuth codes, access tokens, refresh tokens
 
 ## Secret storage
 
-Token2OAuth encrypts upstream credentials with AES-256-GCM. The encryption key is generated locally and stored separately at ~/.config/token2oauth/master.key.
+Token2OAuth encrypts upstream credentials with AES-256-GCM. A random 256-bit master seed is generated locally at ~/.config/token2oauth/master.key, and independent encryption/signing subkeys are derived from it with HKDF-SHA256.
 
 Protect the full configuration directory. Anyone able to read both state.json and master.key can decrypt upstream credentials.
 
