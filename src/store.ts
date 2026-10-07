@@ -8,6 +8,7 @@ import {
   hashPassword,
   randomToken,
 } from "./crypto.js";
+import { planAdminCredentialRotation } from "./admin-security.js";
 import type {
   GatewayConfig,
   PersistedState,
@@ -213,6 +214,7 @@ export class StateStore {
       const before = state.accounts.length;
       state.accounts = state.accounts.filter((a) => a.id !== id);
       removed = state.accounts.length !== before;
+      if (state.capabilities) delete state.capabilities[id];
     });
     return removed;
   }
@@ -245,6 +247,37 @@ export class StateStore {
         account.stats.state = account.enabled ? "unknown" : "disabled";
       }
     });
+  }
+
+  /**
+   * Rotate the admin password. Persists only the admin hash, the admin epoch
+   * (which invalidates admin sessions and pending authorization codes in the
+   * running server, even when called from the CLI) and, when requested, the
+   * OAuth refresh tokens plus an access-token iat cutoff. Upstream credentials,
+   * configuration, OAuth clients and the master key are never touched.
+   */
+  async rotateAdminPassword(
+    newPassword: string,
+    options: { revokeConnections?: boolean; nowMs?: number } = {},
+  ): Promise<{ adminEpoch: number; revokedConnections: boolean }> {
+    const nowMs = options.nowMs ?? Date.now();
+    let epoch = 0;
+    await this.update((state) => {
+      const plan = planAdminCredentialRotation(state, newPassword, nowMs, {
+        revokeConnections: options.revokeConnections === true,
+      });
+      state.admin = plan.statePatch.admin;
+      if (plan.statePatch.refreshTokens) state.refreshTokens = plan.statePatch.refreshTokens;
+      const security = { ...(state.security || {}) };
+      security.adminEpoch = (security.adminEpoch ?? 0) + 1;
+      security.adminRotatedAt = nowMs;
+      if (plan.minimumAcceptedAccessTokenIat !== undefined) {
+        security.accessTokenNotBefore = plan.minimumAcceptedAccessTokenIat;
+      }
+      state.security = security;
+      epoch = security.adminEpoch;
+    });
+    return { adminEpoch: epoch, revokedConnections: options.revokeConnections === true };
   }
 
   async recordProbe(

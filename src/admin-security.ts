@@ -7,12 +7,15 @@ const CSRF_TOKEN_BYTES = 32;
 
 export interface AdminCredentialRotationPlan {
   /** Apply this narrow patch to PersistedState; unrelated settings and credentials are untouched. */
-  statePatch: Pick<PersistedState, "admin" | "refreshTokens">;
+  statePatch: Pick<PersistedState, "admin"> & Partial<Pick<PersistedState, "refreshTokens">>;
   /** Clear the process-local AdminSessions and pending OAuth authorization-code stores. */
   revokeAdminSessions: true;
   revokeAuthorizationCodes: true;
-  /** Reject claims with iat below this value after wiring a cutoff check into access-token auth. */
-  minimumAcceptedAccessTokenIat: number;
+  /**
+   * Reject claims with iat below this value. Undefined when the rotation keeps
+   * existing MCP client connections (refresh and access tokens) alive.
+   */
+  minimumAcceptedAccessTokenIat?: number;
 }
 
 /** Generate a 256-bit URL-safe password. Keep the returned value secret and show it only once. */
@@ -41,22 +44,23 @@ export function planAdminCredentialRotation(
   _currentState: Readonly<PersistedState>,
   newPassword: string,
   nowMs = Date.now(),
+  options: { revokeConnections?: boolean } = {},
 ): AdminCredentialRotationPlan {
+  const revokeConnections = options.revokeConnections ?? true;
   if (newPassword.length < MIN_ADMIN_PASSWORD_LENGTH) {
     throw new Error(`Admin password must be at least ${MIN_ADMIN_PASSWORD_LENGTH} characters.`);
   }
   if (!Number.isFinite(nowMs) || nowMs < 0) throw new Error("nowMs must be a non-negative timestamp.");
 
   return {
-    statePatch: {
-      admin: hashPassword(newPassword),
-      refreshTokens: [],
-    },
+    statePatch: revokeConnections
+      ? { admin: hashPassword(newPassword), refreshTokens: [] }
+      : { admin: hashPassword(newPassword) },
     revokeAdminSessions: true,
     revokeAuthorizationCodes: true,
     // Existing claims use whole-second iat values. Advancing one second ensures every
     // token issued in the rotation second is rejected by a `iat >= cutoff` check.
-    minimumAcceptedAccessTokenIat: Math.floor(nowMs / 1000) + 1,
+    minimumAcceptedAccessTokenIat: revokeConnections ? Math.floor(nowMs / 1000) + 1 : undefined,
   };
 }
 

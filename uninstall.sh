@@ -19,6 +19,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+PUBLIC_PATH="/${PUBLIC_PATH#/}"; PUBLIC_PATH="${PUBLIC_PATH%/}"
+if [[ -z "$PUBLIC_PATH" || "$PUBLIC_PATH" == "/" ]]; then
+  echo "Refusing to touch the Tailscale root path '/': it is shared with other services. Use --path /token2oauth or --keep-route." >&2
+  exit 1
+fi
+
+if (( REMOVE_ROUTE )) && [[ -x "$PREFIX/dist/cli.js" ]] && command -v node >/dev/null 2>&1 && [[ "$PUBLIC_PATH" == "/token2oauth" ]]; then
+  # Preferred: the guarded lifecycle removes only /token2oauth after checking
+  # that every unrelated Serve/Funnel route stays exactly as it was.
+  if node "$PREFIX/dist/cli.js" lifecycle down --keep-service --execute; then
+    REMOVE_ROUTE=0
+  fi
+fi
+
 systemctl --user disable --now token2oauth.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/token2oauth.service"
 systemctl --user daemon-reload 2>/dev/null || true

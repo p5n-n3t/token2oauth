@@ -287,10 +287,19 @@ export type OwnershipAuthorization =
 /**
  * In-memory ownership index. Use it before pool strategy selection so every
  * strategy routes an existing session/task to its established upstream owner.
+ *
+ * Both maps are bounded LRUs: a long-running gateway must not grow without
+ * limit as clients open sessions. Evicted handles simply become "unknown",
+ * which callers treat like a handle seen for the first time.
  */
 export class UpstreamOwnershipRegistry {
   private readonly sessions = new Map<string, string>();
   private readonly tasks = new Map<string, string>();
+  private readonly capacity: number;
+
+  constructor(options: { capacity?: number } = {}) {
+    this.capacity = Math.max(1, Math.floor(options.capacity ?? 10_000));
+  }
 
   bindSession(sessionId: string | undefined, accountId: string): OwnershipBinding | undefined {
     return this.bind(this.sessions, sessionId, accountId);
@@ -300,27 +309,60 @@ export class UpstreamOwnershipRegistry {
     return this.bind(this.tasks, taskId, accountId);
   }
 
+  sessionOwner(sessionId: string | undefined): string | undefined {
+    return sessionId ? this.touch(this.sessions, sessionId) : undefined;
+  }
+
+  forgetSession(sessionId: string | undefined): void {
+    if (sessionId) this.sessions.delete(sessionId);
+  }
+
+  /** Drop every binding that points at an account (e.g. after it is removed). */
+  forgetAccount(accountId: string): void {
+    for (const owners of [this.sessions, this.tasks]) {
+      for (const [handle, owner] of owners) if (owner === accountId) owners.delete(handle);
+    }
+  }
+
+  size(): { sessions: number; tasks: number } {
+    return { sessions: this.sessions.size, tasks: this.tasks.size };
+  }
+
+  private touch(owners: Map<string, string>, handle: string): string | undefined {
+    const owner = owners.get(handle);
+    if (owner !== undefined) {
+      owners.delete(handle);
+      owners.set(handle, owner);
+    }
+    return owner;
+  }
+
   private bind(
     owners: Map<string, string>,
     handle: string | undefined,
     accountId: string,
   ): OwnershipBinding | undefined {
     if (!handle) return undefined;
-    const current = owners.get(handle);
+    const current = this.touch(owners, handle);
     if (current) return { ok: current === accountId, ownerAccountId: current };
     owners.set(handle, accountId);
+    while (owners.size > this.capacity) {
+      const oldest = owners.keys().next().value;
+      if (oldest === undefined) break;
+      owners.delete(oldest);
+    }
     return { ok: true, ownerAccountId: accountId };
   }
 
   resolve(input: { sessionId?: string; request?: unknown }): OwnershipResolution {
     const sessionOwner = input.sessionId
-      ? this.sessions.get(input.sessionId)
+      ? this.touch(this.sessions, input.sessionId)
       : undefined;
     if (input.sessionId && !sessionOwner) {
       return { kind: "unknown-session", sessionId: input.sessionId };
     }
     const taskId = taskIdFromFollowupRequest(input.request);
-    const taskOwner = taskId ? this.tasks.get(taskId) : undefined;
+    const taskOwner = taskId ? this.touch(this.tasks, taskId) : undefined;
 
     if (taskId && !taskOwner) return { kind: "unknown-task", taskId };
     if (sessionOwner && taskOwner && sessionOwner !== taskOwner) {

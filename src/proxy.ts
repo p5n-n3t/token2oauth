@@ -1,8 +1,19 @@
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import type { Request, Response } from "express";
-import type { AccessClaims } from "./types.js";
+import type { AccessClaims, UpstreamAccount } from "./types.js";
 import { CredentialPool } from "./pool.js";
 import { StateStore } from "./store.js";
+import { isReplaySafeRequest, mergeIncomingQuery, taskIdFromResponse } from "./routing-safety.js";
+import {
+  compileToolPolicy,
+  filterServerMessage,
+  gateClientMessage,
+  POLICY_ERROR_CODE,
+  type CompiledToolPolicy,
+  type JsonRpcMessage,
+} from "./tool-policy.js";
+import { parseClientPayload, rewriteServerBody, serverMessages, type ParsedClientPayload } from "./jsonrpc-wire.js";
+import type { TelemetryRecorder } from "./telemetry.js";
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -19,6 +30,14 @@ const HOP_BY_HOP = new Set([
   "content-length",
 ]);
 
+/** Largest response buffered to filter a tools/list result. */
+const MAX_FILTERED_RESPONSE_BYTES = 8 * 1024 * 1024;
+/** Largest prefix of a streamed response scanned for task handles. */
+const MAX_OBSERVED_BYTES = 1024 * 1024;
+
+/** Connection errors where the request provably never reached the upstream. */
+const UNSENT_ERROR_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]);
+
 function copyRequestHeaders(req: Request): Headers {
   const headers = new Headers();
   for (const [key, raw] of Object.entries(req.headers)) {
@@ -33,10 +52,12 @@ function copyRequestHeaders(req: Request): Headers {
   return headers;
 }
 
-function copyResponseHeaders(source: Headers, res: Response): void {
+function copyResponseHeaders(source: Headers, res: Response, omit: string[] = []): void {
   source.forEach((value, key) => {
     const lower = key.toLowerCase();
-    if (HOP_BY_HOP.has(lower) || lower === "set-cookie") return;
+    // fetch() already decoded the body, so a forwarded content-encoding (and
+    // the matching length) would describe bytes the client never receives.
+    if (HOP_BY_HOP.has(lower) || lower === "set-cookie" || lower === "content-encoding" || omit.includes(lower)) return;
     res.setHeader(key, value);
   });
 }
@@ -47,13 +68,62 @@ async function responseTextCapped(response: globalThis.Response, max = 1024 * 10
   return buf.toString("utf8");
 }
 
+async function readBodyLimited(response: globalThis.Response, max: number): Promise<Buffer | undefined> {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
+function requestBody(req: Request): Buffer | undefined {
+  if (req.method === "GET" || req.method === "HEAD") return undefined;
+  if (Buffer.isBuffer(req.body)) return req.body.length ? req.body : undefined;
+  if (req.body === undefined) return undefined;
+  return Buffer.from(typeof req.body === "string" ? req.body : JSON.stringify(req.body));
+}
+
+/** Methods that are safe to re-send to another credential after an ambiguous failure. */
+function replaySafe(req: Request, rpc: ParsedClientPayload | undefined, readOnlyTools: string[]): boolean {
+  if (!rpc) return isReplaySafeRequest({ httpMethod: req.method });
+  return rpc.messages.every((message) => {
+    // Responses to server requests and notifications carry no tool side effect.
+    if (typeof message.method !== "string") return true;
+    if (message.method === "initialize" || message.method.startsWith("notifications/")) return true;
+    return isReplaySafeRequest({ rpcMethod: message.method, params: message.params }, readOnlyTools);
+  });
+}
+
+function describeRequest(req: Request, rpc: ParsedClientPayload | undefined): { method: string; tool?: string } {
+  const first = rpc?.messages.find((m) => typeof m.method === "string");
+  if (!first) return { method: req.method };
+  const tool = first.method === "tools/call" && typeof first.params?.name === "string" ? first.params.name : undefined;
+  return { method: rpc!.batch ? "batch:" + first.method : String(first.method), tool };
+}
+
+function rpcError(id: JsonRpcMessage["id"], code: number, message: string, data?: unknown): JsonRpcMessage {
+  return { jsonrpc: "2.0", id: id ?? null, error: data === undefined ? { code, message } : { code, message, data } };
+}
+
 export class McpProxy {
   constructor(
     private readonly store: StateStore,
     private readonly pool: CredentialPool,
+    private readonly telemetry?: TelemetryRecorder,
   ) {}
 
   handler = async (req: Request, res: Response) => {
+    const startedAt = Date.now();
     let state = await this.store.load();
     if (!state.config.upstreamUrl) {
       return res.status(503).json({
@@ -62,53 +132,135 @@ export class McpProxy {
       });
     }
 
+    const body = requestBody(req);
+    const rpc = req.method === "POST" ? parseClientPayload(body) : undefined;
+    const described = describeRequest(req, rpc);
+    const record = (input: { accountId?: string; status?: number; attempts: number; errorClass?: string; message?: string }) => {
+      this.telemetry?.recordGateway({
+        kind: "request",
+        method: described.method,
+        tool: described.tool,
+        accountId: input.accountId,
+        status: input.status,
+        latencyMs: Date.now() - startedAt,
+        retries: Math.max(0, input.attempts - 1),
+        errorClass: input.errorClass,
+        message: input.message,
+      });
+    };
+
+    // ---- Tool policy: enforced here, server-side, before any upstream I/O.
+    let policy: CompiledToolPolicy | undefined;
+    if (state.config.toolPolicy) {
+      try {
+        policy = compileToolPolicy(state.config.toolPolicy);
+      } catch (error: any) {
+        record({ status: 503, attempts: 0, errorClass: "policy-invalid" });
+        return res.status(503).json({
+          error: "tool_policy_invalid",
+          message: "The configured tool policy is invalid, so requests are refused until it is fixed: " + String(error?.message || error),
+        });
+      }
+      if (req.method === "POST" && body && !rpc) {
+        record({ status: 400, attempts: 0, errorClass: "policy-unparseable" });
+        return res.status(400).json({
+          error: "invalid_request",
+          message: "A tool policy is active, so request bodies must be JSON-RPC.",
+        });
+      }
+      if (rpc) {
+        const gate = gateClientMessage(policy, rpc.payload);
+        const forwarded = gate.forward === null ? 0 : Array.isArray(gate.forward) ? gate.forward.length : 1;
+        if (gate.rejections.length || forwarded < rpc.messages.length) {
+          // Never forward a partially gated body. A batch is rejected as a
+          // whole: forwarding part of it would split the response stream
+          // between the gateway and the upstream.
+          const reason = String(gate.rejections[0]?.error?.message || "Blocked by Token2OAuth tool policy");
+          const responses = rpc.batch
+            ? rpc.messages
+                .filter((m) => m.id !== undefined && typeof m.method === "string")
+                .map((m) => gate.rejections.find((r) => r.id === m.id) ||
+                  rpcError(m.id, POLICY_ERROR_CODE, "Batch rejected because it contains a tool call blocked by Token2OAuth tool policy"))
+            : gate.rejections;
+          if (!responses.length) {
+            // Only id-less (notification-style) tool calls: nothing to answer.
+            record({ status: 202, attempts: 0, errorClass: "policy-denied", message: reason });
+            return res.status(202).end();
+          }
+          record({ status: 200, attempts: 0, errorClass: "policy-denied", message: reason });
+          return res.status(200).json(rpc.batch ? responses : responses[0]);
+        }
+      }
+    }
+
+    // ---- Ownership: existing sessions and task follow-ups go to their owner.
     const incomingSession = req.header("mcp-session-id") || undefined;
     const claims = (res.locals as any).oauthClaims as AccessClaims | undefined;
-    const affinityKey = incomingSession || claims?.sub;
-    const attempted = new Set<string>();
-    const stateful = Boolean(incomingSession);
-    const maxAttempts = stateful && !state.config.failoverStateful
-      ? 1
-      : Math.max(1, Math.min(state.config.maxFailoverAttempts, state.accounts.length || 1));
+    const resolution = this.pool.ownership.resolve({
+      sessionId: incomingSession,
+      request: rpc?.messages.find((m) => typeof m.method === "string"),
+    });
+    let pinned: UpstreamAccount | undefined;
+    if (resolution.kind === "owner" || resolution.kind === "conflict") {
+      const ownerId = resolution.kind === "owner" ? resolution.accountId : resolution.taskOwner;
+      pinned = state.accounts.find((a) => a.id === ownerId && a.enabled);
+      if (!pinned) {
+        // The owning credential was removed or disabled. Per MCP, 404 for a
+        // session tells the client to initialize a new session elsewhere.
+        if (incomingSession) this.pool.ownership.forgetSession(incomingSession);
+        record({ status: 404, attempts: 0, errorClass: "owner-unavailable" });
+        return res.status(404).json(rpcError(rpc?.messages[0]?.id, -32001,
+          "The upstream credential that owns this MCP session is no longer available. Start a new session."));
+      }
+    }
+    // A session id we have never seen (e.g. after a gateway restart): find
+    // the credential that recognises it. An upstream 404 for an unknown
+    // session is a pre-execution rejection, so trying the next credential
+    // cannot repeat a side effect.
+    const discoveringSession = Boolean(incomingSession) && resolution.kind === "unknown-session";
 
+    const readOnlyTools = state.config.readOnlyTools || [];
+    const safeToReplay = replaySafe(req, rpc, readOnlyTools);
+    const stateful = Boolean(incomingSession);
+    const accountCount = Math.max(1, state.accounts.length);
+    const maxAttempts = pinned
+      ? 1
+      : discoveringSession
+        ? accountCount
+        : stateful && !state.config.failoverStateful
+          ? 1
+          : Math.max(1, Math.min(state.config.maxFailoverAttempts, accountCount));
+
+    const affinityKey = claims?.sub;
+    const attempted = new Set<string>();
+    let attempts = 0;
     let lastStatus = 503;
     let lastBody = "";
     let lastHeaders: Headers | undefined;
+    let lastAccountId: string | undefined;
+    let lastErrorClass: string | undefined;
+    const wantsToolsList = Boolean(policy?.hideDenied) && Boolean(rpc?.messages.some((m) => m.method === "tools/list"));
+    const observeTasks = Boolean(rpc?.messages.some((m) => m.method === "tools/call"));
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       state = await this.store.load();
-      const account = this.pool.pick(state, {
-        sessionId: affinityKey,
-        exclude: attempted,
-      });
+      const account = pinned
+        ? state.accounts.find((a) => a.id === pinned!.id)
+        : this.pool.pick(state, { sessionId: affinityKey, exclude: attempted });
       if (!account) break;
       attempted.add(account.id);
+      attempts += 1;
+      lastAccountId = account.id;
+      const attemptStarted = Date.now();
       this.pool.start(account.id);
 
       try {
         const token = await this.store.revealToken(account);
-        const target = new URL(state.config.upstreamUrl);
-        const incoming = new URL(req.originalUrl, "http://token2oauth.local");
-        target.search = incoming.search;
-
+        const target = mergeIncomingQuery(state.config.upstreamUrl, req.originalUrl);
         const headers = copyRequestHeaders(req);
         const scheme = state.config.upstreamAuthScheme.trim();
-        headers.set(
-          state.config.upstreamAuthHeader,
-          scheme ? scheme + " " + token : token,
-        );
+        headers.set(state.config.upstreamAuthHeader, scheme ? scheme + " " + token : token);
         headers.set("x-token2oauth-gateway", "1");
-
-        const body =
-          req.method === "GET" || req.method === "HEAD"
-            ? undefined
-            : Buffer.isBuffer(req.body)
-              ? req.body
-              : req.body === undefined
-                ? undefined
-                : Buffer.from(
-                    typeof req.body === "string" ? req.body : JSON.stringify(req.body),
-                  );
 
         const upstream = await fetch(target, {
           method: req.method,
@@ -118,15 +270,36 @@ export class McpProxy {
           signal: AbortSignal.timeout(state.config.requestTimeoutMs),
         });
 
+        this.recordAttempt(account.id, described, upstream.status, attemptStarted);
         const upstreamSession = upstream.headers.get("mcp-session-id") || undefined;
+
         if (upstream.ok) {
-          this.pool.bindSession(incomingSession, account.id);
-          this.pool.bindSession(upstreamSession, account.id);
-          await this.pool.success(account.id, upstream.status, upstreamSession || affinityKey);
+          this.pool.ownership.bindSession(upstreamSession, account.id);
+          if (discoveringSession) this.pool.ownership.bindSession(incomingSession, account.id);
+          if (req.method === "DELETE" && incomingSession) this.pool.ownership.forgetSession(incomingSession);
+          await this.pool.success(account.id, upstream.status, affinityKey);
+          const contentType = upstream.headers.get("content-type");
+
+          if (wantsToolsList && policy && req.method !== "HEAD") {
+            await this.sendFiltered(res, upstream, policy, rpc!);
+            record({ accountId: account.id, status: upstream.status, attempts });
+            return;
+          }
+
           copyResponseHeaders(upstream.headers, res);
           res.status(upstream.status);
-          if (!upstream.body || req.method === "HEAD") return res.end();
-          Readable.fromWeb(upstream.body as any).pipe(res);
+          if (!upstream.body || req.method === "HEAD") {
+            record({ accountId: account.id, status: upstream.status, attempts });
+            return res.end();
+          }
+          const source = Readable.fromWeb(upstream.body as any);
+          const finished = () => record({ accountId: account.id, status: upstream.status, attempts });
+          if (observeTasks) {
+            source.pipe(this.taskObserver(account.id, contentType, finished)).pipe(res);
+          } else {
+            source.once("end", finished);
+            source.pipe(res);
+          }
           return;
         }
 
@@ -134,34 +307,52 @@ export class McpProxy {
         lastStatus = upstream.status;
         lastBody = text;
         lastHeaders = upstream.headers;
+
+        if (discoveringSession && upstream.status === 404) {
+          // This credential does not own the session; it is not unhealthy.
+          lastErrorClass = "session-not-found";
+          continue;
+        }
+
         const result = await this.pool.failure(
           account.id,
-          {
-            status: upstream.status,
-            body: text,
-            retryAfter: upstream.headers.get("retry-after"),
-          },
+          { status: upstream.status, body: text, retryAfter: upstream.headers.get("retry-after") },
           state.config,
         );
-
-        if (!result.retryable || stateful && !state.config.failoverStateful) break;
+        lastErrorClass = result.preExecution ? "upstream-rejected" : "upstream-http";
+        if (!result.retryable) break;
+        if (!result.preExecution && !safeToReplay) {
+          lastErrorClass = "not-replayed";
+          break;
+        }
+        if (stateful && !discoveringSession && !state.config.failoverStateful) break;
       } catch (error: any) {
-        lastStatus = 502;
+        const timedOut = error?.name === "TimeoutError";
+        const code = error?.cause?.code || error?.code;
+        this.recordAttempt(account.id, described, undefined, attemptStarted, timedOut ? "timeout" : "transport");
+        lastStatus = timedOut ? 504 : 502;
+        lastHeaders = undefined;
         lastBody = JSON.stringify({
           error: "upstream_unavailable",
-          message: error?.name === "TimeoutError" ? "Upstream request timed out." : String(error?.message || error),
+          message: timedOut ? "Upstream request timed out." : String(error?.message || error),
         });
-        const result = await this.pool.failure(
-          account.id,
-          { error: String(error?.message || error) },
-          state.config,
-        );
-        if (!result.retryable || stateful && !state.config.failoverStateful) break;
+        lastErrorClass = timedOut ? "timeout" : "transport";
+        const result = await this.pool.failure(account.id, { error: String(error?.message || error) }, state.config);
+        if (!result.retryable) break;
+        // A timeout or reset is ambiguous: the upstream may have executed the
+        // call. Only replay requests that are known to be read-only, or where
+        // the connection provably never reached the upstream.
+        if (!safeToReplay && !UNSENT_ERROR_CODES.has(code)) {
+          lastErrorClass = "not-replayed";
+          break;
+        }
+        if (stateful && !discoveringSession && !state.config.failoverStateful) break;
       } finally {
         this.pool.finish(account.id);
       }
     }
 
+    record({ accountId: lastAccountId, status: lastBody ? lastStatus : 503, attempts, errorClass: lastErrorClass || "no-credential" });
     if (lastHeaders) copyResponseHeaders(lastHeaders, res);
     res.status(lastStatus);
     if (!res.getHeader("content-type")) res.type("application/json");
@@ -171,4 +362,80 @@ export class McpProxy {
       message: "Every enabled upstream credential is unavailable, cooling down, exhausted, or authentication-failed.",
     });
   };
+
+  private recordAttempt(
+    accountId: string,
+    described: { method: string; tool?: string },
+    status: number | undefined,
+    startedAt: number,
+    errorClass?: string,
+  ): void {
+    this.telemetry?.recordGateway({
+      kind: "attempt",
+      method: described.method,
+      tool: described.tool,
+      accountId,
+      status,
+      latencyMs: Date.now() - startedAt,
+      errorClass: errorClass ?? (status !== undefined && status >= 400 ? "upstream-http" : undefined),
+    });
+  }
+
+  /** Buffer a tools/list response and remove tools hidden by policy. */
+  private async sendFiltered(
+    res: Response,
+    upstream: globalThis.Response,
+    policy: CompiledToolPolicy,
+    rpc: ParsedClientPayload,
+  ): Promise<void> {
+    const contentType = upstream.headers.get("content-type");
+    const buffered = await readBodyLimited(upstream, MAX_FILTERED_RESPONSE_BYTES);
+    const methods = new Map<string | number, string>();
+    for (const message of rpc.messages) {
+      if (message.id !== undefined && message.id !== null && typeof message.method === "string") {
+        methods.set(message.id, message.method);
+      }
+    }
+    const rewritten = buffered === undefined
+      ? undefined
+      : rewriteServerBody(contentType, buffered.toString("utf8"), (payload) => filterServerMessage(policy, payload, methods));
+    if (rewritten === undefined) {
+      // Fail closed: never show an unfiltered tool list while a policy is active.
+      res.status(502).json(rpcError(rpc.messages[0]?.id, -32603,
+        "Token2OAuth could not apply the tool policy to the upstream tools/list response."));
+      return;
+    }
+    copyResponseHeaders(upstream.headers, res);
+    res.status(upstream.status);
+    res.send(rewritten);
+  }
+
+  /** Pass a streamed response through unchanged while learning task ownership. */
+  private taskObserver(accountId: string, contentType: string | null, onEnd: () => void): Transform {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const ownership = this.pool.ownership;
+    return new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        if (size < MAX_OBSERVED_BYTES) {
+          chunks.push(chunk);
+          size += chunk.length;
+        }
+        callback(null, chunk);
+      },
+      flush(callback) {
+        try {
+          const text = Buffer.concat(chunks).subarray(0, MAX_OBSERVED_BYTES).toString("utf8");
+          for (const message of serverMessages(contentType, text)) {
+            ownership.bindTask(taskIdFromResponse(message), accountId);
+          }
+        } catch {
+          // Observation is best-effort; the response itself already passed through.
+        }
+        onEnd();
+        callback();
+      },
+    });
+  }
 }
+

@@ -306,7 +306,12 @@ export interface PlanOptions {
 
 function resolveRoutes(partial?: Partial<RouteExpectations>): RouteExpectations {
   const routes = { ...DEFAULT_ROUTES, ...partial };
-  if (routes.ownedPath === routes.rootPath || !routes.ownedPath.startsWith("/") || routes.ownedPath.endsWith("/")) {
+  if (
+    routes.ownedPath === routes.rootPath ||
+    !routes.ownedPath.startsWith("/") ||
+    routes.ownedPath.endsWith("/") ||
+    !isWithinOwnedPath(routes.ownedPath, OWNED_PATH)
+  ) {
     throw new Error(`owned path ${routes.ownedPath} must be a non-root path without a trailing slash`);
   }
   return routes;
@@ -653,7 +658,14 @@ export function validateStep(step: PlanStep, routes: RouteExpectations): void {
     allowed.add(["tailscale", sub, "--bg", `--https=${routes.httpsPort}`, `--set-path=${routes.ownedPath}`, routes.ownedTarget].join("\u0000"));
     allowed.add(["tailscale", sub, `--https=${routes.httpsPort}`, `--set-path=${routes.ownedPath}`, "off"].join("\u0000"));
   }
-  if (!allowed.has(argv) || routes.ownedPath === routes.rootPath || !routes.ownedPath.startsWith("/") || routes.ownedPath === "/") {
+  // The owned path is pinned to Token2OAuth's own prefix: even a tampered plan
+  // object cannot aim a Serve/Funnel write at "/" or another service's mount.
+  if (
+    !allowed.has(argv) ||
+    routes.ownedPath === routes.rootPath ||
+    routes.ownedPath === "/" ||
+    !isWithinOwnedPath(routes.ownedPath, OWNED_PATH)
+  ) {
     throw new Error(`refusing unrecognised lifecycle command: ${renderCommand(step)}`);
   }
 }

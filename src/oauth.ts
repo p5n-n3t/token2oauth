@@ -17,7 +17,7 @@ import type {
   RefreshTokenRecord,
 } from "./types.js";
 import { StateStore } from "./store.js";
-import { AdminSessions, parseCookies } from "./admin-session.js";
+import { AdminSessions, adminEpoch, parseCookies } from "./admin-session.js";
 
 const ACCESS_TTL_SECONDS = 60 * 60;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -77,6 +77,18 @@ export class OAuthService {
       express.urlencoded({ extended: false, limit: "64kb" }),
       this.token,
     );
+  }
+
+  /** Drop every pending authorization code (used after an admin rotation). */
+  revokeAuthorizationCodes(): void {
+    this.codes.clear();
+  }
+
+  private pruneCodes(): void {
+    const now = Date.now();
+    for (const [code, record] of this.codes) {
+      if (record.expiresAt <= now) this.codes.delete(code);
+    }
   }
 
   private issuer(state: PersistedState): string {
@@ -181,7 +193,8 @@ export class OAuthService {
     try {
       const validated = this.validateAuthorize(state, req.query);
       const session = parseCookies(req.headers.cookie)["t2o_admin"];
-      const loggedIn = this.sessions.valid(session);
+      const loggedIn = this.sessions.valid(session, adminEpoch(state));
+      const csrf = loggedIn ? this.sessions.csrfToken(session) || "" : "";
       const hidden = ["client_id", "redirect_uri", "response_type", "code_challenge", "code_challenge_method", "state", "resource", "scope"]
         .map((name) => '<input type="hidden" name="' + name + '" value="' + esc((req.query as any)[name] || "") + '">')
         .join("");
@@ -199,7 +212,7 @@ button{width:100%;margin-top:18px;padding:13px 16px;border:0;border-radius:13px;
 <p class="muted"><strong>${esc(validated.client.clientName || "OpenAI client")}</strong> is requesting access to the Token2OAuth MCP gateway. Upstream bearer credentials stay on this host and are never returned to the client.</p>
 <div class="pill">scope · mcp</div>
 <form method="post" action="./authorize">${hidden}
-${loggedIn ? '<input type="hidden" name="session_authorized" value="1">' : '<label>Gateway admin password</label><input type="password" name="admin_password" autocomplete="current-password" required>'}
+${loggedIn ? '<input type="hidden" name="session_authorized" value="1"><input type="hidden" name="_csrf" value="' + esc(csrf) + '">' : '<label>Gateway admin password</label><input type="password" name="admin_password" autocomplete="current-password" required>'}
 <button type="submit">Authorize connection →</button></form>
 <div class="foot">OAuth 2.1-style authorization code flow · PKCE S256 · resource-bound token</div></section></main></body></html>`);
     } catch (error: any) {
@@ -217,7 +230,11 @@ ${loggedIn ? '<input type="hidden" name="session_authorized" value="1">' : '<lab
     }
 
     const cookieSession = parseCookies(req.headers.cookie)["t2o_admin"];
-    const sessionOk = this.sessions.valid(cookieSession);
+    // A signed-in admin session only authorizes when the form also carries the
+    // session's CSRF token; otherwise another page could auto-submit consent.
+    const sessionOk =
+      this.sessions.valid(cookieSession, adminEpoch(state)) &&
+      this.sessions.verifyCsrf(cookieSession, req.body._csrf);
     if (!sessionOk && !verifyPassword(String(req.body.admin_password || ""), state.admin)) {
       return res.status(401).type("html").send("<h1>Authorization denied</h1><p>Incorrect gateway admin password.</p>");
     }
@@ -232,7 +249,9 @@ ${loggedIn ? '<input type="hidden" name="session_authorized" value="1">' : '<lab
       resource: validated.resource,
       scope: validated.scope,
       expiresAt: Date.now() + CODE_TTL_MS,
+      adminEpoch: adminEpoch(state),
     });
+    this.pruneCodes();
 
     const target = new URL(validated.redirectUri);
     target.searchParams.set("code", code);
@@ -279,7 +298,7 @@ ${loggedIn ? '<input type="hidden" name="session_authorized" value="1">' : '<lab
     if (grantType === "authorization_code") {
       const code = String(req.body.code || "");
       const record = this.codes.get(code);
-      if (!record || record.expiresAt <= Date.now()) {
+      if (!record || record.expiresAt <= Date.now() || (record.adminEpoch ?? 0) !== adminEpoch(state)) {
         this.codes.delete(code);
         return oauthError(res, 400, "invalid_grant", "Authorization code is invalid or expired.");
       }
@@ -357,6 +376,10 @@ ${loggedIn ? '<input type="hidden" name="session_authorized" value="1">' : '<lab
         throw new Error("issuer or audience mismatch");
       }
       if (!claims.scope.split(/\s+/).includes("mcp")) throw new Error("missing mcp scope");
+      const notBefore = state.security?.accessTokenNotBefore;
+      if (notBefore !== undefined && !(Number.isInteger(claims.iat) && claims.iat >= notBefore)) {
+        throw new Error("token was revoked by an admin credential rotation");
+      }
       (res.locals as any).oauthClaims = claims;
       next();
     } catch (error: any) {

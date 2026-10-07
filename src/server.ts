@@ -4,6 +4,7 @@ import { OAuthService } from "./oauth.js";
 import { CredentialPool } from "./pool.js";
 import { McpProxy } from "./proxy.js";
 import { StateStore, normalizeBasePath } from "./store.js";
+import { TelemetryRecorder } from "./telemetry.js";
 
 export interface ServerOptions {
   host?: string;
@@ -14,10 +15,13 @@ export async function buildApp(store = new StateStore()) {
   await store.init();
   const state = await store.load();
   const sessions = new AdminSessions();
+  // Bounded, in-memory, payload-free telemetry: request/attempt/probe events.
+  const telemetry = new TelemetryRecorder({ capacity: 2000, capturePayloads: false });
   const pool = new CredentialPool(store);
+  pool.telemetry = telemetry;
   const oauth = new OAuthService(store, sessions);
-  const proxy = new McpProxy(store, pool);
-  const ui = new (await import("./ui.js")).AdminUi(store, pool, sessions);
+  const proxy = new McpProxy(store, pool, telemetry);
+  const ui = new (await import("./ui.js")).AdminUi(store, pool, sessions, { oauth, telemetry });
 
   const app = express();
   app.disable("x-powered-by");
@@ -49,7 +53,7 @@ export async function buildApp(store = new StateStore()) {
     res.status(500).json({ error: "internal_error", message: String(error?.message || error) });
   });
 
-  return { app, store, pool };
+  return { app, store, pool, telemetry, sessions };
 }
 
 export async function startServer(options: ServerOptions = {}) {

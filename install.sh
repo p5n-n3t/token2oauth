@@ -220,6 +220,10 @@ EOF
   fi
 fi
 
+if [[ "$MODE" != "none" && "$PUBLIC_PATH" == "/" ]]; then
+  die "Refusing to mount Token2OAuth at the Tailscale root '/': it is shared with other services. Use --path /token2oauth."
+fi
+
 if [[ "$MODE" != "none" ]]; then
   command -v tailscale >/dev/null 2>&1 || die "Tailscale is required for --mode $MODE. Remove --no-tailscale or use --mode none."
   log "Adding Tailscale $MODE route at $PUBLIC_PATH (existing routes are not reset)…"
