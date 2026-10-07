@@ -5,6 +5,8 @@ import type {
   UpstreamAccount,
 } from "./types.js";
 import { StateStore } from "./store.js";
+import { UpstreamOwnershipRegistry } from "./routing-safety.js";
+import type { TelemetryRecorder } from "./telemetry.js";
 
 export interface FailureInfo {
   status?: number;
@@ -46,6 +48,9 @@ export class CredentialPool {
   private rr = 0;
   private active = new Map<string, number>();
   private sessionAffinity = new Map<string, { accountId: string; touchedAt: number }>();
+  /** Hard ownership of upstream MCP sessions and tasks, honored by every strategy. */
+  readonly ownership = new UpstreamOwnershipRegistry({ capacity: 10_000 });
+  telemetry?: TelemetryRecorder;
 
   constructor(private readonly store: StateStore) {}
 
@@ -71,6 +76,12 @@ export class CredentialPool {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     for (const [key, value] of this.sessionAffinity) {
       if (value.touchedAt < cutoff) this.sessionAffinity.delete(key);
+    }
+    // Hard bound: evict oldest insertions if recent traffic alone exceeds it.
+    while (this.sessionAffinity.size > 10_000) {
+      const oldest = this.sessionAffinity.keys().next().value;
+      if (oldest === undefined) break;
+      this.sessionAffinity.delete(oldest);
     }
   }
 
@@ -194,6 +205,12 @@ export class CredentialPool {
     cfg: GatewayConfig,
   ): {
     retryable: boolean;
+    /**
+     * True when the upstream refused the request before running it (auth or
+     * quota rejection), so replaying it on another credential cannot repeat
+     * a side effect.
+     */
+    preExecution: boolean;
     state: UpstreamAccount["stats"]["state"];
     cooldownUntil?: number;
     message: string;
@@ -206,6 +223,7 @@ export class CredentialPool {
     if (status !== undefined && cfg.authFailureStatuses.includes(status)) {
       return {
         retryable: true,
+        preExecution: true,
         state: "auth-failed",
         message: "upstream authentication rejected",
       };
@@ -215,6 +233,9 @@ export class CredentialPool {
       const retryMs = retryAfterMs(info.retryAfter);
       return {
         retryable: true,
+        // Only a quota *status* proves the upstream refused before running the
+        // call; quota-like text inside e.g. a 500 may follow a side effect.
+        preExecution: status !== undefined && cfg.quotaStatuses.includes(status),
         state: status === 402 ? "exhausted" : "cooldown",
         cooldownUntil:
           Date.now() + (retryMs ?? cfg.quotaCooldownSeconds * 1000),
@@ -226,6 +247,7 @@ export class CredentialPool {
       status === undefined || cfg.retryStatuses.includes(status);
     return {
       retryable,
+      preExecution: false,
       state: retryable ? "cooldown" : "healthy",
       cooldownUntil: retryable
         ? Date.now() + cfg.errorCooldownSeconds * 1000
@@ -238,7 +260,7 @@ export class CredentialPool {
     accountId: string,
     info: FailureInfo,
     cfg: GatewayConfig,
-  ): Promise<{ retryable: boolean }> {
+  ): Promise<{ retryable: boolean; preExecution: boolean; message: string }> {
     const classification = this.classifyFailure(info, cfg);
     await this.store.update((state) => {
       const account = state.accounts.find((a) => a.id === accountId);
@@ -253,7 +275,11 @@ export class CredentialPool {
       account.stats.state = classification.state;
       account.stats.cooldownUntil = classification.cooldownUntil;
     });
-    return { retryable: classification.retryable };
+    return {
+      retryable: classification.retryable,
+      preExecution: classification.preExecution,
+      message: classification.message,
+    };
   }
 
   /**
@@ -262,6 +288,22 @@ export class CredentialPool {
    * be verified without waiting for a client session to happen to select it.
    */
   async probeAccount(accountId: string): Promise<ProbeResult> {
+    const startedAt = Date.now();
+    const result = await this.probeAccountInner(accountId);
+    this.telemetry?.recordGateway({
+      kind: "probe",
+      method: "initialize",
+      accountId,
+      status: result.status,
+      latencyMs: Date.now() - startedAt,
+      outcome: result.ok ? "success" : "error",
+      errorClass: result.ok ? undefined : result.status ? "upstream-http" : "probe-failed",
+      message: result.ok ? undefined : result.error,
+    });
+    return result;
+  }
+
+  private async probeAccountInner(accountId: string): Promise<ProbeResult> {
     const state = await this.store.load();
     const account = state.accounts.find((a) => a.id === accountId);
     if (!account) throw new Error("account not found");

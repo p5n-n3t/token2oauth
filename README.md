@@ -248,13 +248,46 @@ token2oauth config set KEY VALUE
 token2oauth oauth clients
 token2oauth oauth revoke-client CLIENT_ID
 
-token2oauth admin reset-password
+token2oauth admin reset-password [--generate] [--revoke-connections]
+
+token2oauth tools refresh [ACCOUNT_ID]
+token2oauth tools list
+token2oauth tools deny NAME
+token2oauth tools allow NAME
+token2oauth tools policy show
+token2oauth tools policy set FILE.json
+
+token2oauth lifecycle status
+token2oauth lifecycle up [--mode funnel|serve] [--execute]
+token2oauth lifecycle down [--keep-service|--keep-route] [--execute]
 
 token2oauth tailscale status
-token2oauth tailscale expose --mode funnel --path /token2oauth --port 2030
+token2oauth tailscale expose [--execute]    # alias of lifecycle up; /token2oauth only
 
-token2oauth doctor
+token2oauth doctor [--live] [--public] [--repairs] [--json]
+token2oauth pools preview
 ~~~
+
+`lifecycle up|down` and `tailscale expose` are dry runs that print the exact
+commands unless `--execute` is given. They only ever add or remove the
+`/token2oauth` mount, re-read `tailscale serve status --json` before and after
+each write, and stop if any other route changed.
+
+### Admin console
+
+- **Pool** — upstream URL, strategy (with live help for each choice),
+  failover/cooldown/timeout settings and per-credential health probes.
+- **Tools** — per-account tool inventory from `tools/list`, enable/disable
+  toggles enforced by the gateway for every MCP client, and "replay-safe"
+  marks for read-only tools.
+- **Diagnostics** — doctor report, read-only service/Funnel check, request
+  analytics by account and tool, recent events in plain language, and quota
+  data only when a provider actually reports it.
+- **Security** — regenerate the admin password (shown once) and optionally
+  disconnect every MCP client.
+
+Every admin form is CSRF-protected and the admin cookie is scoped to the
+gateway path.
 
 Every command supports <code>--help</code> through Commander.
 

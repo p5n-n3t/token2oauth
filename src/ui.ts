@@ -1,10 +1,27 @@
 import type { NextFunction, Request, Response, Router } from "express";
 import express from "express";
 import { verifyPassword } from "./crypto.js";
-import { AdminSessions, parseCookies } from "./admin-session.js";
+import { AdminSessions, adminEpoch, parseCookies } from "./admin-session.js";
+import { generateAdminPassword, validateAdminRedirect } from "./admin-security.js";
 import { CredentialPool } from "./pool.js";
 import { StateStore } from "./store.js";
 import type { PoolStrategy } from "./types.js";
+import { strategyHelp, parameterHelp } from "./dashboard-help.js";
+import type { OAuthService } from "./oauth.js";
+import { TelemetryRecorder, type GatewaySummary } from "./telemetry.js";
+import { renderDiagnosticsPage, renderSecurityPage, renderToolsPage, renderRotatedPage } from "./ui-pages.js";
+import { refreshAccountCapabilities, toolCatalog } from "./capabilities.js";
+import { collectDoctorSnapshot } from "./doctor-runtime.js";
+import { diagnoseDoctorSnapshot } from "./doctor.js";
+import { LifecycleController, createExecFileRunner, planUp, renderCommand } from "./lifecycle.js";
+import { compileToolPolicy, type ToolPolicy } from "./tool-policy.js";
+import { adminNav, withCsrf } from "./html.js";
+
+export interface AdminUiDeps {
+  oauth?: OAuthService;
+  telemetry?: TelemetryRecorder;
+}
+
 
 const strategies: PoolStrategy[] = [
   "adaptive-sticky",
@@ -33,11 +50,13 @@ code,.mono{font-family:"SFMono-Regular",Consolas,monospace}.copy{padding:13px;bo
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #ffffff0d;font-size:13px}th{color:#8290a6;font-size:11px;text-transform:uppercase;letter-spacing:.08em}tr:last-child td{border:0}
 form.inline{display:inline}label{display:block;color:#aeb8ca;font-size:12px;margin:12px 0 6px}input,select{width:100%;padding:11px 12px;border-radius:11px;background:#090c12;border:1px solid #ffffff18;color:#f7f8fb;outline:none}input:focus,select:focus{border-color:#708bff;box-shadow:0 0 0 3px #708bff22}.row{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 button,.btn{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:11px;padding:10px 13px;font-weight:750;color:white;background:linear-gradient(135deg,#41cbea,#6d5df5);cursor:pointer}.btn.secondary,button.secondary{background:#ffffff0b;border:1px solid #ffffff18}.danger{background:#ff556a1c!important;border:1px solid #ff667735!important;color:#ff9aa7!important}.actions{display:flex;gap:7px;flex-wrap:wrap}.flash{padding:12px 14px;border:1px solid #52d89f3c;background:#3cd88a13;border-radius:12px;color:#9cf0c4;margin:0 0 16px}
+label.toggle{display:inline-flex;gap:8px;align-items:center;margin:4px 0;color:#c9d3e5}label.toggle input{width:auto}.findings,.events{list-style:none;padding:0;margin:0}.findings li,.events li{padding:10px 0;border-bottom:1px solid #ffffff0d}pre{white-space:pre-wrap;word-break:break-word;background:#080b11;border:1px solid var(--line);border-radius:10px;padding:10px;max-height:320px;overflow:auto}nav.actions .btn{padding:8px 11px}
 .footer{margin-top:34px;color:#68758c;font-size:12px;text-align:center}.login{min-height:100vh;display:grid;place-items:center}.login .card{width:min(440px,92vw);grid-column:auto}
 @media(max-width:850px){.card,.card.wide{grid-column:1/-1}.row{grid-template-columns:1fr}.nav{align-items:flex-start}.hide-sm{display:none}}
 `;
 
-function page(title: string, body: string): string {
+
+export function page(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#080a0f"><title>${e(title)} · Token2OAuth</title><style>${css}</style></head><body>${body}</body></html>`;
 }
 
@@ -48,33 +67,67 @@ export class AdminUi {
     private readonly store: StateStore,
     private readonly pool: CredentialPool,
     private readonly sessions: AdminSessions,
+    private readonly deps: AdminUiDeps = {},
   ) {
+    const form = express.urlencoded({ extended: false, limit: "64kb" });
+    this.router.use("/admin", this.securityHeaders);
     this.router.get("/", this.home);
     this.router.get("/healthz", this.health);
     this.router.get("/admin/login", this.loginGet);
-    this.router.post("/admin/login", express.urlencoded({ extended: false }), this.loginPost);
-    this.router.post("/admin/logout", this.requireAdmin, this.logout);
+    this.router.post("/admin/login", form, this.loginPost);
+    this.router.post("/admin/logout", form, this.requireAdmin, this.requireCsrf, this.logout);
     this.router.get("/admin", this.requireAdmin, this.admin);
-    this.router.post("/admin/accounts", this.requireAdmin, express.urlencoded({ extended: false }), this.addAccount);
-    this.router.post("/admin/accounts/:id/toggle", this.requireAdmin, express.urlencoded({ extended: false }), this.toggleAccount);
-    this.router.post("/admin/accounts/:id/reset", this.requireAdmin, this.resetAccount);
-    this.router.post("/admin/accounts/:id/probe", this.requireAdmin, this.probeAccount);
-    this.router.post("/admin/accounts/probe-all", this.requireAdmin, this.probeAll);
-    this.router.post("/admin/accounts/:id/remove", this.requireAdmin, this.removeAccount);
-    this.router.post("/admin/config", this.requireAdmin, express.urlencoded({ extended: false }), this.saveConfig);
+    this.router.post("/admin/accounts", form, this.requireAdmin, this.requireCsrf, this.addAccount);
+    this.router.post("/admin/accounts/probe-all", form, this.requireAdmin, this.requireCsrf, this.probeAll);
+    this.router.post("/admin/accounts/:id/toggle", form, this.requireAdmin, this.requireCsrf, this.toggleAccount);
+    this.router.post("/admin/accounts/:id/reset", form, this.requireAdmin, this.requireCsrf, this.resetAccount);
+    this.router.post("/admin/accounts/:id/probe", form, this.requireAdmin, this.requireCsrf, this.probeAccount);
+    this.router.post("/admin/accounts/:id/remove", form, this.requireAdmin, this.requireCsrf, this.removeAccount);
+    this.router.post("/admin/config", form, this.requireAdmin, this.requireCsrf, this.saveConfig);
+    this.router.get("/admin/tools", this.requireAdmin, this.tools);
+    this.router.post("/admin/tools/policy", form, this.requireAdmin, this.requireCsrf, this.saveToolPolicy);
+    this.router.post("/admin/tools/refresh", form, this.requireAdmin, this.requireCsrf, this.refreshTools);
+    this.router.get("/admin/diagnostics", this.requireAdmin, this.diagnostics);
+    this.router.post("/admin/diagnostics", form, this.requireAdmin, this.requireCsrf, this.diagnostics);
+    this.router.get("/admin/diagnostics.json", this.requireAdmin, this.diagnosticsJson);
+    this.router.get("/admin/security", this.requireAdmin, this.security);
+    this.router.post("/admin/security/rotate", form, this.requireAdmin, this.requireCsrf, this.rotatePassword);
   }
 
   private base = async () => (await this.store.load()).config.publicBaseUrl.replace(/\/$/, "");
 
+  private securityHeaders = (_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    next();
+  };
+
   private requireAdmin = async (req: Request, res: Response, next: NextFunction) => {
     const token = parseCookies(req.headers.cookie)["t2o_admin"];
-    if (!this.sessions.valid(token)) {
-      const state = await this.store.load();
+    const state = await this.store.load();
+    if (!this.sessions.valid(token, adminEpoch(state))) {
       const base = state.config.publicBaseUrl.replace(/\/$/, "");
+      if (req.method !== "GET") return res.status(401).type("text").send("Admin session expired. Sign in again.");
       return res.redirect(302, base + "/admin/login?next=" + encodeURIComponent(base + "/admin"));
+    }
+    res.locals.adminToken = token;
+    res.locals.csrf = this.sessions.csrfToken(token);
+    next();
+  };
+
+  private requireCsrf = (req: Request, res: Response, next: NextFunction) => {
+    if (!this.sessions.verifyCsrf(res.locals.adminToken, req.body?._csrf)) {
+      return res.status(403).type("text").send("Invalid or missing CSRF token. Reload the admin page and try again.");
     }
     next();
   };
+
+  private sendAdmin(res: Response, title: string, body: string): void {
+    res.type("html").send(withCsrf(page(title, body), String(res.locals.csrf || "")));
+  }
 
   private home = async (_req: Request, res: Response) => {
     const state = await this.store.load();
@@ -115,20 +168,40 @@ export class AdminUi {
 
   private loginPost = async (req: Request, res: Response) => {
     const state = await this.store.load();
+    const client = req.ip || "unknown";
+    const wait = this.sessions.passwordBlocked(client);
+    if (wait) {
+      res.setHeader("Retry-After", String(wait));
+      return res.status(429).type("html").send(page("Too many attempts", '<main class="login"><section class="card"><h2>Too many attempts</h2><p class="muted">Sign-in is paused for this address. Try again later.</p></section></main>'));
+    }
     if (!verifyPassword(String(req.body.password || ""), state.admin)) {
+      this.sessions.passwordFailed(client);
       return res.status(401).type("html").send(page("Login failed", '<main class="login"><section class="card"><h2>Incorrect password</h2><p class="muted">The gateway admin password did not match.</p><a class="btn" href="./login">Try again</a></section></main>'));
     }
-    const token = this.sessions.create();
-    const secure = state.config.publicBaseUrl.startsWith("https://") ? "; Secure" : "";
-    res.setHeader("Set-Cookie", "t2o_admin=" + encodeURIComponent(token) + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200" + secure);
-    const next = String(req.body.next || state.config.publicBaseUrl + "/admin");
-    res.redirect(302, next.startsWith("/") || next.startsWith(state.config.publicBaseUrl) ? next : state.config.publicBaseUrl + "/admin");
+    this.sessions.passwordSucceeded(client);
+    const token = this.sessions.create(undefined, adminEpoch(state));
+    res.setHeader("Set-Cookie", this.sessionCookie(state.config.publicBaseUrl, encodeURIComponent(token), 43200));
+    const base = state.config.publicBaseUrl.replace(/\/$/, "");
+    const next = validateAdminRedirect(String(req.body.next || ""), base) || base + "/admin";
+    res.redirect(302, next);
+  };
+
+  /** Admin cookie scoped to this gateway's own path, never the shared host root. */
+  private sessionCookie(publicBaseUrl: string, value: string, maxAge: number): string {
+    let path = "/";
+    try {
+      path = new URL(publicBaseUrl).pathname.replace(/\/$/, "") || "/";
+    } catch {
+      // keep "/"
+    }
+    const secure = publicBaseUrl.startsWith("https://") ? "; Secure" : "";
+    return "t2o_admin=" + value + "; Path=" + path + "; HttpOnly; SameSite=Lax; Max-Age=" + maxAge + secure;
   };
 
   private logout = async (req: Request, res: Response) => {
     const state = await this.store.load();
     this.sessions.revoke(parseCookies(req.headers.cookie)["t2o_admin"]);
-    res.setHeader("Set-Cookie", "t2o_admin=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    res.setHeader("Set-Cookie", this.sessionCookie(state.config.publicBaseUrl, "", 0));
     res.redirect(302, state.config.publicBaseUrl + "/");
   };
 
@@ -148,14 +221,24 @@ export class AdminUi {
 
     const strategyOptions = strategies.map((s) => '<option value="' + e(s) + '"' + (state.config.strategy === s ? " selected" : "") + ">" + e(s) + "</option>").join("");
 
-    res.type("html").send(page("Admin", `<main class="wrap"><div class="nav"><div class="brand"><div class="logo">T2</div><div><strong>Token2OAuth</strong><div class="eyebrow">Control plane</div></div></div><div class="actions"><a class="btn secondary" href="${e(base)}/">Gateway</a><form class="inline" method="post" action="${e(base)}/admin/logout"><button class="secondary">Sign out</button></form></div></div>
+    this.sendAdmin(res, "Admin", `<main class="wrap">${adminNav(base, "pool")}
 ${message}<section class="grid">
 <div class="card full"><div class="eyebrow">Connection</div><h2>ChatGPT MCP endpoint</h2><div class="copy">${e(base)}/mcp</div><p class="muted tiny">Add this single URL to ChatGPT. Token2OAuth handles OAuth; you do not create one MCP connection per upstream account.</p></div>
-<div class="card wide"><div class="eyebrow">Upstream</div><h2>MCP target & routing</h2><form method="post" action="${e(base)}/admin/config"><label>Upstream MCP URL</label><input name="upstreamUrl" value="${e(state.config.upstreamUrl)}" placeholder="https://provider.example.com/mcp" required><div class="row"><div><label>Pool strategy</label><select name="strategy">${strategyOptions}</select></div><div><label>Max failover attempts</label><input type="number" min="1" max="20" name="maxFailoverAttempts" value="${e(state.config.maxFailoverAttempts)}"></div></div><div class="row"><div><label>Quota cooldown (seconds)</label><input type="number" min="1" name="quotaCooldownSeconds" value="${e(state.config.quotaCooldownSeconds)}"></div><div><label>Request timeout (ms)</label><input type="number" min="1000" name="requestTimeoutMs" value="${e(state.config.requestTimeoutMs)}"></div></div><button type="submit">Save gateway settings</button></form></div>
-<div class="card"><div class="eyebrow">Default behavior</div><h3>Adaptive sticky</h3><p class="muted tiny">New sessions favor low-use, healthy credentials. Existing MCP sessions remain pinned to one credential so stateful upstream servers do not break. 429/402/quota signals cool an account down and new sessions move to another account.</p></div>
+<div class="card wide"><div class="eyebrow">Upstream</div><h2>MCP target & routing</h2><form method="post" action="${e(base)}/admin/config"><label>Upstream MCP URL</label><input name="upstreamUrl" value="${e(state.config.upstreamUrl)}" placeholder="https://provider.example.com/mcp" required><div class="row"><div><label>Pool strategy</label><select id="pool-strategy" name="strategy" aria-describedby="strategy-definition strategy-example">${strategyOptions}</select></div><div><label for="maxFailoverAttempts">Max failover attempts <span title="${e(parameterHelp.maxFailoverAttempts)}" tabindex="0" aria-label="Help for Max failover attempts">ⓘ</span></label><input type="number" min="1" max="20" id="maxFailoverAttempts" title="${e(parameterHelp.maxFailoverAttempts)}" aria-describedby="maxFailoverAttempts-help" name="maxFailoverAttempts" value="${e(state.config.maxFailoverAttempts)}"><details class="tiny muted"><summary>What does this control?</summary><p id="maxFailoverAttempts-help">${e(parameterHelp.maxFailoverAttempts)}</p></details></div></div><div class="row"><div><label for="quotaCooldownSeconds">Quota cooldown (seconds) <span title="${e(parameterHelp.quotaCooldownSeconds)}" tabindex="0" aria-label="Help for Quota cooldown (seconds)">ⓘ</span></label><input type="number" min="1" id="quotaCooldownSeconds" title="${e(parameterHelp.quotaCooldownSeconds)}" aria-describedby="quotaCooldownSeconds-help" name="quotaCooldownSeconds" value="${e(state.config.quotaCooldownSeconds)}"><details class="tiny muted"><summary>What does this control?</summary><p id="quotaCooldownSeconds-help">${e(parameterHelp.quotaCooldownSeconds)}</p></details></div><div><label for="requestTimeoutMs">Request timeout (ms) <span title="${e(parameterHelp.requestTimeoutMs)}" tabindex="0" aria-label="Help for Request timeout (ms)">ⓘ</span></label><input type="number" min="1000" id="requestTimeoutMs" title="${e(parameterHelp.requestTimeoutMs)}" aria-describedby="requestTimeoutMs-help" name="requestTimeoutMs" value="${e(state.config.requestTimeoutMs)}"><details class="tiny muted"><summary>What does this control?</summary><p id="requestTimeoutMs-help">${e(parameterHelp.requestTimeoutMs)}</p></details></div></div><button type="submit">Save gateway settings</button></form></div>
+<div class="card" aria-live="polite"><div class="eyebrow">Selected strategy</div><h3 id="strategy-title">${e(strategyHelp[state.config.strategy].title)}</h3><p class="muted tiny" id="strategy-definition">${e(strategyHelp[state.config.strategy].definition)}</p><strong class="tiny">Example use case</strong><p class="muted tiny" id="strategy-example">${e(strategyHelp[state.config.strategy].example)}</p><p class="muted tiny">Every strategy keeps an established MCP session, and tasks it started, on the credential that created them.</p></div>
 <div class="card full"><div class="eyebrow">Credential pool</div><h2>Upstream accounts</h2><p class="muted tiny">New tokens are <code>unknown</code> until used. Test credentials sends one authenticated MCP <code>initialize</code> request to each selected account; it does not create a ChatGPT OAuth connection or reveal a token.</p>${rows ? `<div class="actions" style="margin:12px 0"><form class="inline" method="post" action="${e(base)}/admin/accounts/probe-all"><button type="submit">Test all enabled credentials</button></form></div><div style="overflow:auto"><table><thead><tr><th>Account</th><th>State</th><th>Success</th><th>Last HTTP</th><th>Probe</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No bearer credentials have been added yet.</p>'}</div>
 <div class="card full"><div class="eyebrow">Add credential</div><h2>Add an upstream bearer token</h2><p class="muted tiny">The token is AES-256-GCM encrypted before it is written to disk. It is never rendered back into this page.</p><form method="post" action="${e(base)}/admin/accounts"><div class="row"><div><label>Label</label><input name="label" placeholder="LightSprint Pro #1" required></div><div><label>Provider / preset</label><input name="provider" value="generic-bearer-mcp"></div></div><label>Bearer token</label><input type="password" name="token" autocomplete="off" required><div class="row"><div><label>Weight</label><input type="number" step="0.1" min="0.1" name="weight" value="1"></div><div><label>Priority (lower first)</label><input type="number" name="priority" value="100"></div></div><button type="submit">Encrypt & add credential</button></form></div>
-</section><div class="footer">Secrets: ${e(this.store.dir)} · Public base: ${e(base)}</div></main>`));
+</section><script>
+const help = ${JSON.stringify(strategyHelp).replaceAll("<", "\\u003c")};
+const strategySelect = document.getElementById("pool-strategy");
+strategySelect.addEventListener("change", () => {
+  const selected = help[strategySelect.value];
+  if (!selected) return;
+  document.getElementById("strategy-title").textContent = selected.title;
+  document.getElementById("strategy-definition").textContent = selected.definition;
+  document.getElementById("strategy-example").textContent = selected.example;
+});
+</script><div class="footer">Secrets: ${e(this.store.dir)} · Public base: ${e(base)}</div></main>`);
   };
 
   private addAccount = async (req: Request, res: Response) => {
@@ -220,4 +303,159 @@ ${message}<section class="grid">
     });
     res.redirect(303, base + "/admin?ok=1");
   };
+  private tools = async (req: Request, res: Response) => {
+    const state = await this.store.load();
+    const base = state.config.publicBaseUrl.replace(/\/$/, "");
+    const notice = typeof req.query.notice === "string" ? req.query.notice : undefined;
+    this.sendAdmin(res, "Tools", renderToolsPage({ base, state, catalog: toolCatalog(state), notice }));
+  };
+
+  /**
+   * Persist the enabled-tool selection as denyTools. Allowlists and endpoint
+   * rules managed from the CLI are preserved untouched. Denials of tools not
+   * in the current inventory are kept, so a tool that temporarily disappears
+   * upstream is not silently re-enabled when it returns.
+   */
+  private saveToolPolicy = async (req: Request, res: Response) => {
+    const base = await this.base();
+    const list = (value: unknown): string[] =>
+      (Array.isArray(value) ? value : value === undefined ? [] : [value]).map(String).filter((v) => v.length > 0 && v.length <= 128);
+    const enabled = new Set(list(req.body.enabled));
+    const readOnly = list(req.body.readOnly);
+    let message = "Tool policy saved.";
+    await this.store.update((state) => {
+      const catalogNames = toolCatalog(state).map((t) => t.name);
+      const previous = state.config.toolPolicy;
+      const keptDenied = (previous?.denyTools || []).filter((name) => !catalogNames.includes(name));
+      const denyTools = [...new Set([...keptDenied, ...catalogNames.filter((name) => !enabled.has(name))])].sort();
+      const next: ToolPolicy = { ...(previous || {}), denyTools };
+      if (!denyTools.length) delete next.denyTools;
+      const empty = !next.denyTools && !next.allowTools && !next.endpoints?.length;
+      // Never persist a policy the proxy would refuse to compile (that would
+      // fail every MCP request closed); throwing aborts the update.
+      if (!empty) compileToolPolicy(next);
+      state.config.toolPolicy = empty ? undefined : next;
+      const readOnlySet = [...new Set(readOnly.filter((name) => catalogNames.includes(name)))].sort();
+      state.config.readOnlyTools = readOnlySet.length ? readOnlySet : undefined;
+      message = `Tool policy saved: ${denyTools.length} tool${denyTools.length === 1 ? "" : "s"} blocked, ${readOnlySet.length} marked replay-safe.`;
+    });
+    res.redirect(303, base + "/admin/tools?notice=" + encodeURIComponent(message));
+  };
+
+  private refreshTools = async (req: Request, res: Response) => {
+    const state = await this.store.load();
+    const base = state.config.publicBaseUrl.replace(/\/$/, "");
+    const requested = typeof req.body.accountId === "string" ? req.body.accountId : undefined;
+    const targets = state.accounts.filter((a) => a.enabled && (!requested || a.id === requested));
+    let ok = 0;
+    // Sequential on purpose: avoid a burst of upstream sessions.
+    for (const account of targets) {
+      const result = await refreshAccountCapabilities(this.store, account.id, this.deps.telemetry);
+      if (result.ok) ok += 1;
+    }
+    const notice = targets.length
+      ? `Refreshed ${targets.length} account inventor${targets.length === 1 ? "y" : "ies"}: ${ok} succeeded, ${targets.length - ok} failed.`
+      : "No enabled account matched.";
+    res.redirect(303, base + "/admin/tools?notice=" + encodeURIComponent(notice));
+  };
+
+  private diagnostics = async (req: Request, res: Response) => {
+    const posted = req.method === "POST";
+    const checks = {
+      live: posted && req.body.live === "1",
+      funnel: posted && req.body.funnel === "1",
+      publicMetadata: posted && req.body.publicMetadata === "1",
+    };
+    const telemetry = this.deps.telemetry;
+    const snapshot = await collectDoctorSnapshot(this.store, this.pool, {
+      inProcess: true,
+      live: checks.live,
+      publicMetadata: checks.publicMetadata,
+      telemetry,
+    });
+    let lifecycle: Parameters<typeof renderDiagnosticsPage>[0]["lifecycle"];
+    if (checks.funnel) {
+      try {
+        const controller = new LifecycleController(createExecFileRunner(15_000));
+        const observed = await controller.observe();
+        const up = planUp(observed);
+        lifecycle = { status: await controller.status(), upCommands: up.steps.map(renderCommand), upBlockers: up.blockers };
+        const routes = observed.routes;
+        snapshot.funnel = {
+          checked: true,
+          enabled: routes.funnel,
+          expectedPath: controller.routes.ownedPath,
+          reportedCollision: routes.owned.state === "collision",
+          mounts: Object.entries((routes.hostPort && observed.serveConfig.Web?.[routes.hostPort]?.Handlers) || {}).map(([path, handler]) => {
+            try {
+              const target = new URL(String(handler.Proxy));
+              return { path, targetHost: target.hostname, targetPort: Number(target.port) || undefined };
+            } catch {
+              return { path };
+            }
+          }),
+        };
+      } catch (error: any) {
+        lifecycle = { error: "Could not read the service or Tailscale status: " + String(error?.message || error).slice(0, 200) };
+      }
+    }
+    const state = await this.store.load();
+    const base = state.config.publicBaseUrl.replace(/\/$/, "");
+    const empty = { recorded: 0, retained: 0, dropped: 0, providerRetained: 0 };
+    this.sendAdmin(res, "Diagnostics", renderDiagnosticsPage({
+      base,
+      state,
+      summary: telemetry ? telemetry.summary() : emptySummary(),
+      recent: telemetry ? telemetry.recent({ limit: 60 }) : [],
+      stats: telemetry ? telemetry.stats() : empty,
+      report: diagnoseDoctorSnapshot(snapshot),
+      checks,
+      providerUsage: telemetry ? telemetry.latestProviderUsage() : [],
+      lifecycle,
+      ownership: this.pool.ownership.size(),
+    }));
+  };
+
+  private diagnosticsJson = async (_req: Request, res: Response) => {
+    const telemetry = this.deps.telemetry;
+    const snapshot = await collectDoctorSnapshot(this.store, this.pool, { inProcess: true });
+    res.json({
+      doctor: diagnoseDoctorSnapshot(snapshot),
+      telemetry: telemetry
+        ? { stats: telemetry.stats(), summary: telemetry.summary(), recent: telemetry.recent({ limit: 100 }), providerUsage: telemetry.latestProviderUsage() }
+        : null,
+      ownership: this.pool.ownership.size(),
+    });
+  };
+
+  private security = async (req: Request, res: Response) => {
+    const state = await this.store.load();
+    const base = state.config.publicBaseUrl.replace(/\/$/, "");
+    const notice = typeof req.query.notice === "string" ? req.query.notice : undefined;
+    this.sendAdmin(res, "Security", renderSecurityPage(base, state, notice));
+  };
+
+  /**
+   * Regenerate the admin password. The new value exists only in this response
+   * body (marked no-store) and in the hash written to state; it is never put
+   * in a URL, a log line or a redirect.
+   */
+  private rotatePassword = async (req: Request, res: Response) => {
+    const state = await this.store.load();
+    const base = state.config.publicBaseUrl.replace(/\/$/, "");
+    if (!verifyPassword(String(req.body.currentPassword || ""), state.admin)) {
+      return res.redirect(303, base + "/admin/security?notice=" + encodeURIComponent("Current password did not match. Nothing was changed."));
+    }
+    const revokeConnections = req.body.revokeConnections === "1";
+    const password = generateAdminPassword();
+    await this.store.rotateAdminPassword(password, { revokeConnections });
+    this.sessions.revokeAll();
+    this.deps.oauth?.revokeAuthorizationCodes();
+    res.setHeader("Set-Cookie", this.sessionCookie(state.config.publicBaseUrl, "", 0));
+    res.type("html").send(page("New admin password", renderRotatedPage(base, password, revokeConnections)));
+  };
+}
+
+function emptySummary(): GatewaySummary {
+  return new TelemetryRecorder({ capacity: 1 }).summary();
 }
