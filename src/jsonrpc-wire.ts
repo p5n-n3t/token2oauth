@@ -1,7 +1,7 @@
 /**
  * Helpers for reading MCP Streamable HTTP payloads, which arrive either as a
  * single `application/json` body or as a `text/event-stream` of JSON-RPC
- * messages. Pure functions; no I/O.
+ * messages. Parsing helpers are pure; readBodyLimited only consumes a body.
  */
 
 import type { JsonRpcMessage } from "./tool-policy.js";
@@ -125,4 +125,23 @@ export function rewriteServerBody(
   } catch {
     return undefined;
   }
+}
+
+/** Read a fetch() body, giving up (undefined) once it exceeds `max` bytes. */
+export async function readBodyLimited(response: globalThis.Response, max: number): Promise<Buffer | undefined> {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
 }

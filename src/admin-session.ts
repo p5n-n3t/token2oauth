@@ -9,9 +9,43 @@ interface AdminSession {
 }
 
 const MAX_SESSIONS = 500;
+/** Failed admin-password attempts allowed per client address per window. */
+const LOGIN_FAILURE_LIMIT = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const MAX_TRACKED_ADDRESSES = 5000;
 
 export class AdminSessions {
   private sessions = new Map<string, AdminSession>();
+  private failures = new Map<string, { count: number; resetAt: number }>();
+
+  /**
+   * Shared admin-password throttle for every place that accepts the password
+   * (admin login and OAuth consent). Returns seconds to wait, or 0.
+   */
+  passwordBlocked(client: string): number {
+    const entry = this.failures.get(client);
+    if (!entry || entry.resetAt <= Date.now() || entry.count < LOGIN_FAILURE_LIMIT) return 0;
+    return Math.ceil((entry.resetAt - Date.now()) / 1000);
+  }
+
+  passwordFailed(client: string): void {
+    const now = Date.now();
+    const entry = this.failures.get(client);
+    const current = entry && entry.resetAt > now ? entry : { count: 0, resetAt: now + LOGIN_WINDOW_MS };
+    current.count += 1;
+    this.failures.delete(client);
+    this.failures.set(client, current);
+    // Evict the oldest addresses instead of clearing every counter.
+    while (this.failures.size > MAX_TRACKED_ADDRESSES) {
+      const oldest = this.failures.keys().next().value;
+      if (oldest === undefined) break;
+      this.failures.delete(oldest);
+    }
+  }
+
+  passwordSucceeded(client: string): void {
+    this.failures.delete(client);
+  }
 
   create(ttlMs = 12 * 60 * 60 * 1000, epoch = 0): string {
     const token = randomToken(32);

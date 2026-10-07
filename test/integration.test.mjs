@@ -513,3 +513,49 @@ test("lifecycle and CLI can only ever target Token2OAuth's own /token2oauth path
   assert.match(result.stderr, /only manages its own \/token2oauth/);
   await rm(dir, { recursive: true, force: true });
 });
+
+test("review fixes: non-POST bodies, quota text on 5xx, odd tool names, framed consent, interrupted streams", async () => {
+  const env = await setup({ strategy: "priority" });
+  try {
+    const tokens = await oauthTokens(env.base);
+    await env.store.update((s) => { s.config.toolPolicy = { denyTools: ["ns:danger tool"] }; });
+    const before = env.ctl.calls.length;
+    for (const method of ["PUT", "PATCH", "DELETE"]) {
+      const res = await fetch(env.base + "/mcp", { method, headers: { authorization: "Bearer " + tokens.access_token, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "danger" } }) });
+      assert.ok([400, 405].includes(res.status), method + " with a body is refused under a policy");
+    }
+    assert.equal(env.ctl.calls.length, before);
+    const odd = await (await mcp(env.base, tokens.access_token, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ns:danger tool" } })).json();
+    assert.equal(odd.error.code, -32602, "tool names with colons/spaces can be denied");
+    await env.store.update((s) => { delete s.config.toolPolicy; });
+
+    // 500 whose text matches a quota pattern: a write call must not be replayed.
+    const { createServer } = await import("node:http");
+    const flaky = createServer((req, res) => { req.resume(); req.on("end", () => { res.writeHead(500, { "content-type": "application/json" }); res.end('{"error":"downstream rate limit exceeded"}'); }); });
+    const fAddr = await listen(flaky);
+    const original = (await env.store.load()).config.upstreamUrl;
+    await env.store.update((s) => { s.config.upstreamUrl = `http://127.0.0.1:${fAddr.port}/mcp`; });
+    const r500 = await mcp(env.base, tokens.access_token, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "safe" } });
+    assert.equal(r500.status, 500);
+    const events = env.built.telemetry.recent({ kind: "attempt", limit: 5 });
+    assert.equal(events.filter((e) => e.tool === "safe" && e.status === 500).length, 1, "exactly one upstream attempt");
+    await close(flaky);
+
+    // An upstream that resets mid-stream must not crash the gateway.
+    const broken = createServer((req, res) => { req.resume(); req.on("end", () => { res.writeHead(200, { "content-type": "text/event-stream" }); res.write("event: message\ndata: {\"jsonrpc\":\"2.0\""); setTimeout(() => res.socket.destroy(), 30); }); });
+    const bAddr = await listen(broken);
+    await env.store.update((s) => { s.config.upstreamUrl = `http://127.0.0.1:${bAddr.port}/mcp`; });
+    await env.store.resetAccountHealth();
+    await mcp(env.base, tokens.access_token, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "safe" } }).then((r) => r.text()).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal((await fetch(env.base + "/healthz")).status, 200, "gateway survived the interrupted stream");
+    await close(broken);
+    await env.store.update((s) => { s.config.upstreamUrl = original; });
+
+    const consent = await fetch(env.base + "/oauth/authorize?client_id=x");
+    assert.equal(consent.headers.get("x-frame-options"), "DENY");
+    assert.match(consent.headers.get("content-security-policy"), /frame-ancestors 'none'/);
+  } finally {
+    await env.teardown();
+  }
+});

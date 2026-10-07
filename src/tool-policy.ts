@@ -108,7 +108,8 @@ export class PolicyConfigError extends Error {}
 // servers strip), no non-ASCII (lookalike/normalization tricks), no `%`.
 const SEGMENT_SAFE = /^[A-Za-z0-9._~\-:@]+$/;
 const DOTS_ONLY = /^\.+$/;
-const TOOL_NAME = /^[A-Za-z0-9_.\-/]{1,128}$/;
+// Any non-empty name an upstream can advertise, minus control characters.
+const TOOL_NAME = /^[^\u0000-\u001f\u007f]{1,128}$/;
 
 function compileRule(rule: EndpointRule, prefixSegments: string[], index: number): CompiledRule {
   if (!rule || typeof rule.path !== "string") throw new PolicyConfigError(`rule ${index}: path is required`);

@@ -1,4 +1,4 @@
-import { Readable, Transform } from "node:stream";
+import { Readable, Transform, pipeline } from "node:stream";
 import type { Request, Response } from "express";
 import type { AccessClaims, UpstreamAccount } from "./types.js";
 import { CredentialPool } from "./pool.js";
@@ -12,7 +12,7 @@ import {
   type CompiledToolPolicy,
   type JsonRpcMessage,
 } from "./tool-policy.js";
-import { parseClientPayload, rewriteServerBody, serverMessages, type ParsedClientPayload } from "./jsonrpc-wire.js";
+import { parseClientPayload, readBodyLimited, rewriteServerBody, serverMessages, type ParsedClientPayload } from "./jsonrpc-wire.js";
 import type { TelemetryRecorder } from "./telemetry.js";
 
 const HOP_BY_HOP = new Set([
@@ -66,24 +66,6 @@ async function responseTextCapped(response: globalThis.Response, max = 1024 * 10
   const buf = Buffer.from(await response.arrayBuffer());
   if (buf.length > max) return buf.subarray(0, max).toString("utf8") + "\n[truncated]";
   return buf.toString("utf8");
-}
-
-async function readBodyLimited(response: globalThis.Response, max: number): Promise<Buffer | undefined> {
-  if (!response.body) return Buffer.alloc(0);
-  const reader = response.body.getReader();
-  const chunks: Buffer[] = [];
-  let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > max) {
-      await reader.cancel().catch(() => undefined);
-      return undefined;
-    }
-    chunks.push(Buffer.from(value));
-  }
-  return Buffer.concat(chunks);
 }
 
 function requestBody(req: Request): Buffer | undefined {
@@ -159,6 +141,22 @@ export class McpProxy {
         return res.status(503).json({
           error: "tool_policy_invalid",
           message: "The configured tool policy is invalid, so requests are refused until it is fixed: " + String(error?.message || error),
+        });
+      }
+      // Only POST carries JSON-RPC in Streamable HTTP. Refuse other methods
+      // and bodies on non-POST requests so nothing bypasses the gate.
+      if (!["GET", "POST", "DELETE", "HEAD", "OPTIONS"].includes(req.method)) {
+        record({ status: 405, attempts: 0, errorClass: "policy-unparseable" });
+        return res.status(405).setHeader("Allow", "GET, POST, DELETE").json({
+          error: "method_not_allowed",
+          message: "A tool policy is active; only GET, POST and DELETE are proxied.",
+        });
+      }
+      if (req.method !== "POST" && body) {
+        record({ status: 400, attempts: 0, errorClass: "policy-unparseable" });
+        return res.status(400).json({
+          error: "invalid_request",
+          message: "A tool policy is active, so only POST requests may carry a body.",
         });
       }
       if (req.method === "POST" && body && !rpc) {
@@ -253,6 +251,19 @@ export class McpProxy {
       lastAccountId = account.id;
       const attemptStarted = Date.now();
       this.pool.start(account.id);
+      // The timeout bounds the wait for upstream headers (and for bodies the
+      // gateway buffers); a long-lived stream is ended by the client instead.
+      // A client disconnect always cancels the upstream request.
+      const abort = new AbortController();
+      const timer = setTimeout(
+        () => abort.abort(new DOMException("Upstream request timed out.", "TimeoutError")),
+        state.config.requestTimeoutMs,
+      );
+      const onClientClose = () => {
+        if (!res.writableFinished) abort.abort(new DOMException("Client disconnected.", "AbortError"));
+      };
+      res.once("close", onClientClose);
+      let streaming = false;
 
       try {
         const token = await this.store.revealToken(account);
@@ -267,7 +278,7 @@ export class McpProxy {
           headers,
           body: body ? new Uint8Array(body) : undefined,
           redirect: "manual",
-          signal: AbortSignal.timeout(state.config.requestTimeoutMs),
+          signal: abort.signal,
         });
 
         this.recordAttempt(account.id, described, upstream.status, attemptStarted);
@@ -292,14 +303,27 @@ export class McpProxy {
             record({ accountId: account.id, status: upstream.status, attempts });
             return res.end();
           }
+          clearTimeout(timer);
+          streaming = true;
           const source = Readable.fromWeb(upstream.body as any);
-          const finished = () => record({ accountId: account.id, status: upstream.status, attempts });
-          if (observeTasks) {
-            source.pipe(this.taskObserver(account.id, contentType, finished)).pipe(res);
-          } else {
-            source.once("end", finished);
-            source.pipe(res);
-          }
+          let recorded = false;
+          const finished = (error?: unknown) => {
+            if (recorded) return;
+            recorded = true;
+            record({
+              accountId: account.id,
+              status: upstream.status,
+              attempts,
+              errorClass: error ? "stream-interrupted" : undefined,
+            });
+          };
+          const stages: NodeJS.ReadWriteStream[] = observeTasks ? [this.taskObserver(account.id, contentType)] : [];
+          // pipeline() destroys every stage on error, so an upstream reset or
+          // client disconnect can never surface as an uncaught stream error.
+          pipeline([source, ...stages, res] as any, (error: NodeJS.ErrnoException | null) => {
+            res.off("close", onClientClose);
+            finished(error && error.code !== "ERR_STREAM_PREMATURE_CLOSE" ? error : undefined);
+          });
           return;
         }
 
@@ -327,6 +351,11 @@ export class McpProxy {
         }
         if (stateful && !discoveringSession && !state.config.failoverStateful) break;
       } catch (error: any) {
+        if (abort.signal.reason?.name === "AbortError") {
+          // The client went away; the credential did nothing wrong.
+          record({ accountId: account.id, attempts, errorClass: "client-closed" });
+          return;
+        }
         const timedOut = error?.name === "TimeoutError";
         const code = error?.cause?.code || error?.code;
         this.recordAttempt(account.id, described, undefined, attemptStarted, timedOut ? "timeout" : "transport");
@@ -348,6 +377,10 @@ export class McpProxy {
         }
         if (stateful && !discoveringSession && !state.config.failoverStateful) break;
       } finally {
+        if (!streaming) {
+          clearTimeout(timer);
+          res.off("close", onClientClose);
+        }
         this.pool.finish(account.id);
       }
     }
@@ -411,7 +444,7 @@ export class McpProxy {
   }
 
   /** Pass a streamed response through unchanged while learning task ownership. */
-  private taskObserver(accountId: string, contentType: string | null, onEnd: () => void): Transform {
+  private taskObserver(accountId: string, contentType: string | null): Transform {
     const chunks: Buffer[] = [];
     let size = 0;
     const ownership = this.pool.ownership;
@@ -432,7 +465,6 @@ export class McpProxy {
         } catch {
           // Observation is best-effort; the response itself already passed through.
         }
-        onEnd();
         callback();
       },
     });

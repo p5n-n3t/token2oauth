@@ -233,7 +233,9 @@ export class CredentialPool {
       const retryMs = retryAfterMs(info.retryAfter);
       return {
         retryable: true,
-        preExecution: true,
+        // Only a quota *status* proves the upstream refused before running the
+        // call; quota-like text inside e.g. a 500 may follow a side effect.
+        preExecution: status !== undefined && cfg.quotaStatuses.includes(status),
         state: status === 402 ? "exhausted" : "cooldown",
         cooldownUntil:
           Date.now() + (retryMs ?? cfg.quotaCooldownSeconds * 1000),

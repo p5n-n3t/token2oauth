@@ -143,6 +143,8 @@ const ERROR_TEXT: Record<string, string> = {
   "no-credential": "no eligible credential",
   "probe-failed": "probe could not complete",
   "inventory-failed": "tool inventory could not be collected",
+  "stream-interrupted": "the response stream was interrupted",
+  "client-closed": "the client disconnected",
 };
 
 export function renderDiagnosticsPage(input: DiagnosticsPageInput): string {

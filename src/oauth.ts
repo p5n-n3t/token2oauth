@@ -66,6 +66,15 @@ export class OAuthService {
     this.router.get("/.well-known/oauth-protected-resource", this.protectedResource);
     this.router.get("/.well-known/oauth-authorization-server", this.authorizationMetadata);
     this.router.post("/oauth/register", express.json({ limit: "128kb" }), this.register);
+    // The consent page must never render inside another site's frame: a
+    // signed-in admin could otherwise be clickjacked into approving a client.
+    this.router.use("/oauth/authorize", (_req, res, next) => {
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      next();
+    });
     this.router.get("/oauth/authorize", this.authorizeGet);
     this.router.post(
       "/oauth/authorize",
@@ -235,7 +244,16 @@ ${loggedIn ? '<input type="hidden" name="session_authorized" value="1"><input ty
     const sessionOk =
       this.sessions.valid(cookieSession, adminEpoch(state)) &&
       this.sessions.verifyCsrf(cookieSession, req.body._csrf);
+    const client = req.ip || "unknown";
+    if (!sessionOk) {
+      const wait = this.sessions.passwordBlocked(client);
+      if (wait) {
+        res.setHeader("Retry-After", String(wait));
+        return res.status(429).type("html").send("<h1>Too many attempts</h1><p>Authorization is paused for this address. Try again later.</p>");
+      }
+    }
     if (!sessionOk && !verifyPassword(String(req.body.admin_password || ""), state.admin)) {
+      this.sessions.passwordFailed(client);
       return res.status(401).type("html").send("<h1>Authorization denied</h1><p>Incorrect gateway admin password.</p>");
     }
 

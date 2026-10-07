@@ -6,7 +6,7 @@
  */
 
 import { collectToolInventory, createCapabilitySnapshot } from "./provider-capabilities.js";
-import { serverMessages } from "./jsonrpc-wire.js";
+import { readBodyLimited, serverMessages } from "./jsonrpc-wire.js";
 import type { JsonRpcMessage } from "./tool-policy.js";
 import type { PersistedState, StoredCapabilities, StoredToolRecord, UpstreamAccount } from "./types.js";
 import type { StateStore } from "./store.js";
@@ -46,8 +46,9 @@ async function rpc(
     redirect: "manual",
     signal: AbortSignal.timeout(Math.min(state.config.requestTimeoutMs, 30_000)),
   });
-  const raw = Buffer.from(await response.arrayBuffer());
-  const text = raw.subarray(0, MAX_RESPONSE_BYTES).toString("utf8");
+  const raw = await readBodyLimited(response, MAX_RESPONSE_BYTES);
+  if (raw === undefined) throw new Error("upstream response exceeded " + MAX_RESPONSE_BYTES + " bytes");
+  const text = raw.toString("utf8");
   const message = body.id === undefined
     ? undefined
     : serverMessages(response.headers.get("content-type"), text).find((m) => m.id === body.id);

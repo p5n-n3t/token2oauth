@@ -14,7 +14,7 @@ import { refreshAccountCapabilities, toolCatalog } from "./capabilities.js";
 import { collectDoctorSnapshot } from "./doctor-runtime.js";
 import { diagnoseDoctorSnapshot } from "./doctor.js";
 import { LifecycleController, createExecFileRunner, planUp, renderCommand } from "./lifecycle.js";
-import type { ToolPolicy } from "./tool-policy.js";
+import { compileToolPolicy, type ToolPolicy } from "./tool-policy.js";
 import { adminNav, withCsrf } from "./html.js";
 
 export interface AdminUiDeps {
@@ -22,9 +22,6 @@ export interface AdminUiDeps {
   telemetry?: TelemetryRecorder;
 }
 
-/** Failed admin password attempts allowed per client address per window. */
-const LOGIN_FAILURE_LIMIT = 10;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 const strategies: PoolStrategy[] = [
   "adaptive-sticky",
@@ -65,8 +62,6 @@ export function page(title: string, body: string): string {
 
 export class AdminUi {
   readonly router: Router = express.Router();
-
-  private readonly loginFailures = new Map<string, { count: number; resetAt: number }>();
 
   constructor(
     private readonly store: StateStore,
@@ -174,20 +169,16 @@ export class AdminUi {
   private loginPost = async (req: Request, res: Response) => {
     const state = await this.store.load();
     const client = req.ip || "unknown";
-    const now = Date.now();
-    const failures = this.loginFailures.get(client);
-    if (failures && failures.resetAt > now && failures.count >= LOGIN_FAILURE_LIMIT) {
-      res.setHeader("Retry-After", String(Math.ceil((failures.resetAt - now) / 1000)));
+    const wait = this.sessions.passwordBlocked(client);
+    if (wait) {
+      res.setHeader("Retry-After", String(wait));
       return res.status(429).type("html").send(page("Too many attempts", '<main class="login"><section class="card"><h2>Too many attempts</h2><p class="muted">Sign-in is paused for this address. Try again later.</p></section></main>'));
     }
     if (!verifyPassword(String(req.body.password || ""), state.admin)) {
-      const current = failures && failures.resetAt > now ? failures : { count: 0, resetAt: now + LOGIN_WINDOW_MS };
-      current.count += 1;
-      this.loginFailures.set(client, current);
-      if (this.loginFailures.size > 5000) this.loginFailures.clear();
+      this.sessions.passwordFailed(client);
       return res.status(401).type("html").send(page("Login failed", '<main class="login"><section class="card"><h2>Incorrect password</h2><p class="muted">The gateway admin password did not match.</p><a class="btn" href="./login">Try again</a></section></main>'));
     }
-    this.loginFailures.delete(client);
+    this.sessions.passwordSucceeded(client);
     const token = this.sessions.create(undefined, adminEpoch(state));
     res.setHeader("Set-Cookie", this.sessionCookie(state.config.publicBaseUrl, encodeURIComponent(token), 43200));
     const base = state.config.publicBaseUrl.replace(/\/$/, "");
@@ -340,6 +331,9 @@ strategySelect.addEventListener("change", () => {
       const next: ToolPolicy = { ...(previous || {}), denyTools };
       if (!denyTools.length) delete next.denyTools;
       const empty = !next.denyTools && !next.allowTools && !next.endpoints?.length;
+      // Never persist a policy the proxy would refuse to compile (that would
+      // fail every MCP request closed); throwing aborts the update.
+      if (!empty) compileToolPolicy(next);
       state.config.toolPolicy = empty ? undefined : next;
       const readOnlySet = [...new Set(readOnly.filter((name) => catalogNames.includes(name)))].sort();
       state.config.readOnlyTools = readOnlySet.length ? readOnlySet : undefined;
