@@ -146,6 +146,20 @@ token2oauth account add --label "Pro account 2" --weight 1.5
 token2oauth account add --label "Pro account 3" --priority 50
 ~~~
 
+### 3a. Test every credential
+
+New accounts begin as `unknown` until the proxy uses them. To verify every
+token before attaching ChatGPT, run a direct authenticated MCP initialize
+probe. It runs sequentially and records only the resulting status, never the
+token itself:
+
+~~~bash
+token2oauth account probe
+~~~
+
+The admin console provides **Test credential** and **Test all enabled
+credentials** controls with the same behavior.
+
 The interactive CLI disables terminal echo while the token is entered.
 
 For automation:
