@@ -1,4 +1,9 @@
-# Multi-pool schema scaffold
+# Multi-pool schema (foundation)
+
+**Status in 0.2.0:** validation and the read-only migration preview are
+available via `token2oauth pools preview`. Runtime routing, persistence of
+named pools and per-pool OAuth audiences are not implemented yet; the gateway
+still serves one default pool.
 
 The new src/pool-schema.ts defines an opt-in schema boundary for future named
 pools. It does not change the state store, HTTP routes, MCP proxy, or OAuth flow.

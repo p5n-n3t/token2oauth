@@ -1,4 +1,11 @@
-# Diagnostics view scaffold
+# Diagnostics view
+
+**Status in 0.2.0:** `formatDiagnosticEntry` renders the redacted raw record
+behind each event on the admin Diagnostics page (inside a native disclosure).
+The standalone `renderDiagnosticsView` document and the SSE stream described
+below are not used; the page is server-rendered on request.
+
+## Original notes
 
 This change adds a standalone renderer. It does not add an admin route, collect logs, or connect the renderer to `AdminUi`. The current proxy has useful integration metadata in `src/proxy.ts` (upstream status, configured provider/account, and MCP session IDs); `CredentialPool` tracks aggregate per-account health. The server does not currently assign request IDs or retain structured request events. The renderer accepts correlation fields when a future producer supplies them.
 

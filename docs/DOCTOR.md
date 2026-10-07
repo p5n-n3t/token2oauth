@@ -1,4 +1,15 @@
-# Doctor API (scaffolding)
+# Doctor
+
+**Integrated in 0.2.0:** `token2oauth doctor` collects a real snapshot via
+`src/doctor-runtime.ts` (local `/healthz`, state, decryptability of each stored
+credential without revealing it, last probe results, stored tool inventories,
+read-only `systemctl`/`tailscale serve status --json`; `--live` adds one
+initialize probe and one inventory refresh; `--public` fetches OAuth metadata
+through the public URL and checks ChatGPT's callback is registered).
+`--repairs` prints previews only; a missing Funnel mount points at `token2oauth
+lifecycle up`. The dashboard Diagnostics page runs the same checks on request.
+
+## Original API notes
 
 `src/doctor.ts` provides deterministic diagnosis and repair previews for a
 coordinator or future CLI integration. It consumes caller-supplied snapshots;

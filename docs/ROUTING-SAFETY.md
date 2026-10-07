@@ -63,10 +63,25 @@ ambiguous handle to the client.
 - Parse a complete JSON-RPC response before treating JSON-RPC or tool errors as
   retry signals. Do not retry a streamed response after bytes have been sent
   downstream.
-- The registry is in-memory and process-local. A restart loses its bindings;
-  a future integration must either persist them or fail closed for task
-  follow-ups whose owner is no longer known. The helpers do not implement
-  account selection, HTTP status mapping, persistence, or proxy wiring.
+- The registry is in-memory, process-local and now bounded (LRU, 10,000
+  handles per map). A restart loses its bindings.
+
+## Integrated behaviour (0.2.0)
+
+- Known MCP sessions and task follow-ups (`tasks/get|result|cancel`) are
+  pinned to their owning credential under every pool strategy, with no
+  failover. If the owner was removed or disabled the gateway answers 404 so
+  the client starts a new session.
+- An unknown session id (e.g. after a restart) is rediscovered: an upstream
+  404 for that session is a pre-execution rejection, so the next credential is
+  tried without marking the first one unhealthy.
+- Failover after HTTP 401/402/429 or quota text always proceeds (the upstream
+  refused before executing). After a timeout, reset or 5xx only replay-safe
+  requests are retried: MCP reads, `initialize`, notifications, and tools the
+  admin marked replay-safe. Connection errors that prove the request never
+  left (ECONNREFUSED, DNS failures) are also retried.
+- `mergeIncomingQuery` preserves query parameters configured on the upstream
+  URL.
 - The helpers never receive or expose upstream keys. Keep authentication
   headers out of logs and continue to use the existing encrypted credential
   store for tokens.

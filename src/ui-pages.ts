@@ -118,6 +118,9 @@ export function humanizeEvent(event: GatewayEvent, state: PersistedState): strin
       ? `Upstream attempt for ${event.tool ? `tool “${event.tool}”` : event.method || "request"}`
       : `Client request ${event.tool ? `calling tool “${event.tool}”` : event.method || ""}`.trim();
   const who = event.accountId ? ` using ${accountLabel(state, event.accountId)}` : "";
+  if (event.errorClass === "policy-denied") {
+    return `${what} was blocked by the tool policy and never sent upstream.`;
+  }
   const result = event.outcome === "success"
     ? `succeeded${event.status ? ` (HTTP ${event.status})` : ""}`
     : `failed${event.status ? ` with HTTP ${event.status}` : ""}${event.errorClass ? ` — ${ERROR_TEXT[event.errorClass] || event.errorClass}` : ""}`;

@@ -1,9 +1,15 @@
 # Lifecycle: up / down / status
 
 `src/lifecycle.ts` is a self-contained, injectable planner and controller for
-the Token2OAuth user service and its owned Tailscale path. **It is not wired
-into the CLI or dashboard yet** — it is exported for later integration (see
-[Integration](#integration)).
+the Token2OAuth user service and its owned Tailscale path.
+
+**Integrated in 0.2.0:** `token2oauth lifecycle status|up|down` (dry run unless
+`--execute`), `token2oauth tailscale expose` (now an alias that refuses any
+path other than `/token2oauth`), the read-only exposure check on the dashboard
+Diagnostics page, and `uninstall.sh` (route removal goes through `lifecycle
+down`). The owned path is pinned to `/token2oauth` in `resolveRoutes` and
+`validateStep`, so no caller can aim a write at `/` or another mount. The
+dashboard never runs `up` or `down`.
 
 ## What it manages
 
@@ -128,13 +134,11 @@ Tests (`test/lifecycle.test.mjs`) inject an in-memory fake for `systemctl` and
 
 Not done in this change (deliberately; the assignment owned only the new files):
 
-1. CLI: add `token2oauth up|down|status [--execute] [--mode] [--keep-route]
-   [--keep-service]` in `src/cli.ts`, printing `report.commands` on dry run.
-2. Dashboard: expose `status` read-only; for down, show the one-way warning and
-   pass `invokedFrom: "dashboard"`. Do not offer "up" from the dashboard.
-3. `src/index.ts`: re-export `./lifecycle.js` if it should be public API.
-4. Follow-up: the existing `token2oauth tailscale expose --mode serve` can
-   clear `AllowFunnel` on a shared Funnel listener (rule 3); route it through
-   `planUp` instead.
-5. Follow-up: `uninstall.sh` runs a scoped `off` without verifying the target
-   or the last-handler cascade; route it through `planDown`.
+1. Done: `token2oauth lifecycle status|up|down [--execute] [--mode]
+   [--keep-route] [--keep-service]`.
+2. Done: the dashboard shows status read-only and never offers up/down.
+3. Not exported from `src/index.ts`; the CLI is the supported entry point.
+4. Done: `token2oauth tailscale expose` routes through `planUp` and refuses
+   any path other than `/token2oauth`.
+5. Done: `uninstall.sh` tries `lifecycle down --keep-service --execute` first
+   and refuses `/` outright; `install.sh` also refuses `/`.

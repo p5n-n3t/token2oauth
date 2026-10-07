@@ -1,9 +1,21 @@
 # Provider capabilities and tool policy
 
-Status: **library primitives only.** `src/provider-capabilities.ts` and
-`src/tool-policy.ts` are exported, tested modules. They are **not yet wired**
-into the proxy, CLI, admin UI or persisted config. See
-[Integration steps](#integration-steps).
+Status: **integrated in 0.2.0.**
+
+- `config.toolPolicy` (optional; absent = passthrough) is enforced by the
+  proxy before any upstream I/O: denied `tools/call` requests get a JSON-RPC
+  `-32602` error and never reach the upstream; a batch containing one is
+  rejected whole; non-JSON bodies are refused while a policy is active;
+  `tools/list` responses (JSON or SSE) are filtered, failing closed with a 502
+  if the response cannot be parsed.
+- `src/capabilities.ts` collects a per-account inventory (`initialize`,
+  `notifications/initialized`, paginated `tools/list`, then `DELETE` of the
+  upstream session) and stores names, descriptions, schema hashes and
+  annotation hints in `state.capabilities` (never tokens).
+- Dashboard **Tools** page: per-account inventory, enable/disable toggles
+  (written as `denyTools`; CLI-managed `allowTools`/`endpoints` are kept) and
+  "replay-safe" marks (`config.readOnlyTools`).
+- CLI: `token2oauth tools refresh|list|deny|allow|policy show|policy set`.
 
 ## Capability snapshots
 

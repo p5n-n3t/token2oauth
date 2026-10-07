@@ -23,7 +23,7 @@ const program = new Command();
 program
   .name("token2oauth")
   .description("OAuth 2.1 facade + smart bearer-token pool for remote MCP servers")
-  .version("0.1.0");
+  .version("0.2.0");
 
 function store() {
   return new StateStore();

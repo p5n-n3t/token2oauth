@@ -22,4 +22,11 @@ The current `/oauth/authorize` POST validates the client and its exact registere
 
 ## Integration boundary
 
-This scaffolding intentionally does not alter route handlers, add a state schema field, or perform runtime writes. To integrate rotation, apply the returned state patch under the existing `StateStore.update` lock, add bulk-revoke operations to the currently per-token `AdminSessions` and private authorization-code stores, and persist/check the access-token cutoff. Add CSRF checks before protected POST handlers and use the redirect validator in admin login. OAuth callback redirects already use exact registered-URI matching; preserve that check.
+Integrated in 0.2.0:
+
+- Every admin POST requires the session's synchronizer CSRF token (`_csrf`, injected into every admin form). A signed-in admin session only authorizes OAuth consent when the consent form also carries that token.
+- Admin login uses `validateAdminRedirect`; the admin cookie is scoped to the gateway path (e.g. `/token2oauth`) instead of `/`; failed logins are throttled per address; admin pages send `no-store`, `X-Frame-Options: DENY` and a `frame-ancestors 'none'` CSP.
+- `StateStore.rotateAdminPassword` applies the plan under the state lock and increments `state.security.adminEpoch`. Admin sessions and pending authorization codes are bound to the epoch, so a rotation from the CLI (another process) also signs out the running dashboard.
+- Connection revocation is opt-in (`--revoke-connections` / dashboard checkbox): it clears refresh tokens and sets `state.security.accessTokenNotBefore`, which `/mcp` authentication enforces.
+- Dashboard **Security** page: re-enter the current password, regenerate. The new password is returned once in a `no-store` response body; it is never placed in a URL, redirect, log or state file. CLI: `token2oauth admin reset-password --generate [--revoke-connections]` prints it once to the operator's terminal.
+- Upstream credentials, configuration, OAuth clients and the master key are never touched by rotation.

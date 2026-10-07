@@ -1,9 +1,16 @@
 # Telemetry primitives
 
 `src/telemetry.ts` provides bounded, dependency-free building blocks for
-gateway diagnostics. **It is not wired into the server, proxy, CLI or admin
-console yet** — nothing records events at runtime until a later change calls
-it. Import it from `dist/telemetry.js` after `npm run build`.
+gateway diagnostics.
+
+**Integrated in 0.2.0:** `buildApp` creates one `TelemetryRecorder` (2,000
+events, payload capture off). The proxy records one `request` event per client
+request and one `attempt` event per upstream try; credential probes and tool
+inventory refreshes record `probe` events. The admin Diagnostics page and
+`/admin/diagnostics.json` (admin session required) render the summary and
+recent events. Data is in memory only and resets on restart. No provider
+usage is recorded because the configured upstream reports none; the dashboard
+says so instead of estimating.
 
 ## Two kinds of data, kept apart
 

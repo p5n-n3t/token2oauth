@@ -96,10 +96,13 @@ export async function collectDoctorSnapshot(
   }
   snapshot.credentials = { checked: true, observedAt: Date.now(), accounts };
 
-  // Upstream evidence is the most recent real initialize probe, if any.
-  const probed = state.accounts
-    .filter((a) => a.stats.lastProbeAt)
-    .sort((a, b) => (b.stats.lastProbeAt || 0) - (a.stats.lastProbeAt || 0))[0];
+  // Upstream evidence is a real initialize probe: the most recent successful
+  // one on an enabled account (the upstream is reachable), else the most
+  // recent failure. Per-credential problems are reported under credentials.
+  const probes = state.accounts
+    .filter((a) => a.enabled && a.stats.lastProbeAt)
+    .sort((a, b) => (b.stats.lastProbeAt || 0) - (a.stats.lastProbeAt || 0));
+  const probed = probes.find((a) => a.stats.lastProbeOk) || probes[0];
   if (probed) {
     const error = probed.stats.lastProbeError;
     snapshot.upstream = {
