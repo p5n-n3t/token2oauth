@@ -15,6 +15,12 @@ unknown ──2xx──▶ healthy
    └──manual disable──────────────▶ disabled
 ~~~
 
+New credentials intentionally begin as `unknown`; that is not a failed health
+check. Use `token2oauth account probe` (or **Test all enabled credentials** in
+the admin console) to send a direct authenticated MCP `initialize` request to
+each token. Probes run sequentially and save their HTTP result without exposing
+the bearer token.
+
 ## Stateful sessions
 
 A provider may tie Mcp-Session-Id to server-side state. Replaying the same ID while changing credentials can be incorrect, so failoverStateful is false by default.
@@ -42,5 +48,6 @@ token2oauth account list
 token2oauth account disable ACCOUNT_ID
 token2oauth account enable ACCOUNT_ID
 token2oauth account reset-health ACCOUNT_ID
+token2oauth account probe [ACCOUNT_ID]
 token2oauth pool strategy adaptive-sticky
 ~~~

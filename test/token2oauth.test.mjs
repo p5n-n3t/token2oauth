@@ -53,6 +53,38 @@ test("pool classifies auth, quota, and transient failures", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test("credential probes authenticate every enabled account without pool selection", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "t2o-probe-"));
+  process.env.TOKEN2OAUTH_CONFIG_DIR = dir;
+  const upstream = createHttpServer((req, res) => {
+    if (req.headers.authorization === "Bearer good-token") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: "token2oauth-health-probe", result: {} }));
+    }
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "bad token" }));
+  });
+  const address = await listen(upstream);
+  const store = new StateStore();
+  await store.init({ adminPassword: "long-test-password" });
+  await store.update((state) => { state.config.upstreamUrl = `http://127.0.0.1:${address.port}/mcp`; });
+  const good = await store.addAccount({ label: "good", token: "good-token" });
+  const bad = await store.addAccount({ label: "bad", token: "bad-token" });
+  const pool = new CredentialPool(store);
+  const results = await pool.probeAll();
+  assert.deepEqual(results.map((result) => [result.accountId, result.ok, result.status]), [
+    [good.id, true, 200],
+    [bad.id, false, 401],
+  ]);
+  const checked = new Map(pool.snapshot(await store.load()).map((row) => [row.id, row]));
+  assert.equal(checked.get(good.id).state, "healthy");
+  assert.equal(checked.get(good.id).lastProbeOk, true);
+  assert.equal(checked.get(bad.id).state, "auth-failed");
+  assert.equal(checked.get(bad.id).lastProbeOk, false);
+  await close(upstream);
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("OAuth PKCE flow issues resource-bound tokens and MCP failover rotates to a healthy credential", async () => {
   const dir = await mkdtemp(join(tmpdir(), "t2o-integration-"));
   process.env.TOKEN2OAUTH_CONFIG_DIR = dir;

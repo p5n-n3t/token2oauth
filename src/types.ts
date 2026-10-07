@@ -33,6 +33,10 @@ export interface AccountStats {
   state: AccountState;
   lastStatus?: number;
   lastError?: string;
+  lastProbeAt?: number;
+  lastProbeOk?: boolean;
+  lastProbeStatus?: number;
+  lastProbeError?: string;
 }
 
 export interface UpstreamAccount {

@@ -189,6 +189,23 @@ account
     console.log(id ? "Reset " + id : "Reset all account health.");
   });
 
+account
+  .command("probe [id]")
+  .description("Send an authenticated MCP initialize health probe to one account or all enabled accounts")
+  .action(async (id) => {
+    const s = await ensureStore();
+    const credentialPool = new CredentialPool(s);
+    const results = id ? [await credentialPool.probeAccount(id)] : await credentialPool.probeAll();
+    console.table(results.map((result) => ({
+      id: result.accountId,
+      label: result.label,
+      ok: result.ok,
+      status: result.status || "",
+      result: result.error || "healthy",
+    })));
+    if (results.some((result) => !result.ok)) process.exitCode = 1;
+  });
+
 const pool = program.command("pool").description("Inspect or configure pool routing");
 pool
   .command("status")

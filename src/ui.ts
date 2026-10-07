@@ -58,6 +58,8 @@ export class AdminUi {
     this.router.post("/admin/accounts", this.requireAdmin, express.urlencoded({ extended: false }), this.addAccount);
     this.router.post("/admin/accounts/:id/toggle", this.requireAdmin, express.urlencoded({ extended: false }), this.toggleAccount);
     this.router.post("/admin/accounts/:id/reset", this.requireAdmin, this.resetAccount);
+    this.router.post("/admin/accounts/:id/probe", this.requireAdmin, this.probeAccount);
+    this.router.post("/admin/accounts/probe-all", this.requireAdmin, this.probeAll);
     this.router.post("/admin/accounts/:id/remove", this.requireAdmin, this.removeAccount);
     this.router.post("/admin/config", this.requireAdmin, express.urlencoded({ extended: false }), this.saveConfig);
   }
@@ -134,10 +136,14 @@ export class AdminUi {
     const state = await this.store.load();
     const base = state.config.publicBaseUrl.replace(/\/$/, "");
     const accounts = this.pool.snapshot(state);
-    const message = req.query.ok ? '<div class="flash">Saved successfully.</div>' : "";
+    const notice = typeof req.query.notice === "string" ? req.query.notice : req.query.ok ? "Saved successfully." : "";
+    const message = notice ? '<div class="flash">' + e(notice) + "</div>" : "";
     const rows = accounts.map((a) => {
       const dot = ["healthy", "ready", "unknown"].includes(String(a.state)) ? "" : a.state === "cooldown" ? "warn" : "bad";
-      return `<tr><td><strong>${e(a.label)}</strong><div class="tiny muted mono">${e(a.id)}</div></td><td><span class="pill"><span class="dot ${dot}"></span>${e(a.state)}</span></td><td>${a.successes}/${a.requests}</td><td>${e(a.lastStatus || "—")}</td><td><div class="actions"><form class="inline" method="post" action="${e(base)}/admin/accounts/${e(a.id)}/toggle"><input type="hidden" name="enabled" value="${a.enabled ? "0" : "1"}"><button class="secondary" type="submit">${a.enabled ? "Disable" : "Enable"}</button></form><form class="inline" method="post" action="${e(base)}/admin/accounts/${e(a.id)}/reset"><button class="secondary" type="submit">Reset health</button></form><form class="inline" method="post" action="${e(base)}/admin/accounts/${e(a.id)}/remove" onsubmit="return confirm('Remove this credential?')"><button class="danger" type="submit">Remove</button></form></div></td></tr>`;
+      const probe = a.lastProbeAt
+        ? (a.lastProbeOk ? "OK " + e(a.lastProbeStatus || "") : "Failed " + e(a.lastProbeStatus || a.lastProbeError || ""))
+        : "Not tested";
+      return `<tr><td><strong>${e(a.label)}</strong><div class="tiny muted mono">${e(a.id)}</div></td><td><span class="pill"><span class="dot ${dot}"></span>${e(a.state)}</span></td><td>${a.successes}/${a.requests}</td><td>${e(a.lastStatus || "—")}</td><td>${probe}</td><td><div class="actions"><form class="inline" method="post" action="${e(base)}/admin/accounts/${e(a.id)}/probe"><button class="secondary" type="submit">Test credential</button></form><form class="inline" method="post" action="${e(base)}/admin/accounts/${e(a.id)}/toggle"><input type="hidden" name="enabled" value="${a.enabled ? "0" : "1"}"><button class="secondary" type="submit">${a.enabled ? "Disable" : "Enable"}</button></form><form class="inline" method="post" action="${e(base)}/admin/accounts/${e(a.id)}/reset"><button class="secondary" type="submit">Reset health</button></form><form class="inline" method="post" action="${e(base)}/admin/accounts/${e(a.id)}/remove" onsubmit="return confirm('Remove this credential?')"><button class="danger" type="submit">Remove</button></form></div></td></tr>`;
     }).join("");
 
     const strategyOptions = strategies.map((s) => '<option value="' + e(s) + '"' + (state.config.strategy === s ? " selected" : "") + ">" + e(s) + "</option>").join("");
@@ -147,7 +153,7 @@ ${message}<section class="grid">
 <div class="card full"><div class="eyebrow">Connection</div><h2>ChatGPT MCP endpoint</h2><div class="copy">${e(base)}/mcp</div><p class="muted tiny">Add this single URL to ChatGPT. Token2OAuth handles OAuth; you do not create one MCP connection per upstream account.</p></div>
 <div class="card wide"><div class="eyebrow">Upstream</div><h2>MCP target & routing</h2><form method="post" action="${e(base)}/admin/config"><label>Upstream MCP URL</label><input name="upstreamUrl" value="${e(state.config.upstreamUrl)}" placeholder="https://provider.example.com/mcp" required><div class="row"><div><label>Pool strategy</label><select name="strategy">${strategyOptions}</select></div><div><label>Max failover attempts</label><input type="number" min="1" max="20" name="maxFailoverAttempts" value="${e(state.config.maxFailoverAttempts)}"></div></div><div class="row"><div><label>Quota cooldown (seconds)</label><input type="number" min="1" name="quotaCooldownSeconds" value="${e(state.config.quotaCooldownSeconds)}"></div><div><label>Request timeout (ms)</label><input type="number" min="1000" name="requestTimeoutMs" value="${e(state.config.requestTimeoutMs)}"></div></div><button type="submit">Save gateway settings</button></form></div>
 <div class="card"><div class="eyebrow">Default behavior</div><h3>Adaptive sticky</h3><p class="muted tiny">New sessions favor low-use, healthy credentials. Existing MCP sessions remain pinned to one credential so stateful upstream servers do not break. 429/402/quota signals cool an account down and new sessions move to another account.</p></div>
-<div class="card full"><div class="eyebrow">Credential pool</div><h2>Upstream accounts</h2>${rows ? `<div style="overflow:auto"><table><thead><tr><th>Account</th><th>State</th><th>Success</th><th>Last HTTP</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No bearer credentials have been added yet.</p>'}</div>
+<div class="card full"><div class="eyebrow">Credential pool</div><h2>Upstream accounts</h2><p class="muted tiny">New tokens are <code>unknown</code> until used. Test credentials sends one authenticated MCP <code>initialize</code> request to each selected account; it does not create a ChatGPT OAuth connection or reveal a token.</p>${rows ? `<div class="actions" style="margin:12px 0"><form class="inline" method="post" action="${e(base)}/admin/accounts/probe-all"><button type="submit">Test all enabled credentials</button></form></div><div style="overflow:auto"><table><thead><tr><th>Account</th><th>State</th><th>Success</th><th>Last HTTP</th><th>Probe</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No bearer credentials have been added yet.</p>'}</div>
 <div class="card full"><div class="eyebrow">Add credential</div><h2>Add an upstream bearer token</h2><p class="muted tiny">The token is AES-256-GCM encrypted before it is written to disk. It is never rendered back into this page.</p><form method="post" action="${e(base)}/admin/accounts"><div class="row"><div><label>Label</label><input name="label" placeholder="LightSprint Pro #1" required></div><div><label>Provider / preset</label><input name="provider" value="generic-bearer-mcp"></div></div><label>Bearer token</label><input type="password" name="token" autocomplete="off" required><div class="row"><div><label>Weight</label><input type="number" step="0.1" min="0.1" name="weight" value="1"></div><div><label>Priority (lower first)</label><input type="number" name="priority" value="100"></div></div><button type="submit">Encrypt & add credential</button></form></div>
 </section><div class="footer">Secrets: ${e(this.store.dir)} · Public base: ${e(base)}</div></main>`));
   };
@@ -176,6 +182,22 @@ ${message}<section class="grid">
     const base = await this.base();
     await this.store.resetAccountHealth(String(req.params.id));
     res.redirect(303, base + "/admin?ok=1");
+  };
+
+  private probeAccount = async (req: Request, res: Response) => {
+    const base = await this.base();
+    const result = await this.pool.probeAccount(String(req.params.id));
+    const notice = result.ok
+      ? result.label + " passed authenticated MCP probe (HTTP " + result.status + ")."
+      : result.label + " probe failed: " + (result.error || "unknown error") + ".";
+    res.redirect(303, base + "/admin?notice=" + encodeURIComponent(notice));
+  };
+
+  private probeAll = async (_req: Request, res: Response) => {
+    const base = await this.base();
+    const results = await this.pool.probeAll();
+    const passed = results.filter((result) => result.ok).length;
+    res.redirect(303, base + "/admin?notice=" + encodeURIComponent("Tested " + results.length + " enabled credentials: " + passed + " passed, " + (results.length - passed) + " failed."));
   };
 
   private removeAccount = async (req: Request, res: Response) => {

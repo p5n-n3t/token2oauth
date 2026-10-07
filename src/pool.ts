@@ -13,6 +13,14 @@ export interface FailureInfo {
   error?: string;
 }
 
+export interface ProbeResult {
+  accountId: string;
+  label: string;
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+
 function retryAfterMs(value: string | null | undefined): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
@@ -248,6 +256,79 @@ export class CredentialPool {
     return { retryable: classification.retryable };
   }
 
+  /**
+   * Send a real MCP initialize request with exactly one encrypted upstream
+   * credential. Pool selection is deliberately bypassed so every account can
+   * be verified without waiting for a client session to happen to select it.
+   */
+  async probeAccount(accountId: string): Promise<ProbeResult> {
+    const state = await this.store.load();
+    const account = state.accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error("account not found");
+    if (!account.enabled) {
+      return { accountId, label: account.label, ok: false, error: "account is disabled" };
+    }
+    if (!state.config.upstreamUrl) {
+      return { accountId, label: account.label, ok: false, error: "upstream URL is not configured" };
+    }
+
+    try {
+      const token = await this.store.revealToken(account);
+      const headers = new Headers({
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "x-token2oauth-health-probe": "1",
+      });
+      const scheme = state.config.upstreamAuthScheme.trim();
+      headers.set(
+        state.config.upstreamAuthHeader,
+        scheme ? scheme + " " + token : token,
+      );
+      const response = await fetch(state.config.upstreamUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "token2oauth-health-probe",
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "Token2OAuth health probe", version: "0.1.0" },
+          },
+        }),
+        redirect: "manual",
+        signal: AbortSignal.timeout(Math.min(state.config.requestTimeoutMs, 15_000)),
+      });
+      if (response.ok) {
+        await this.success(account.id, response.status);
+        await this.store.recordProbe(account.id, { ok: true, status: response.status });
+        return { accountId, label: account.label, ok: true, status: response.status };
+      }
+
+      const error = "upstream HTTP " + response.status;
+      await this.failure(account.id, { status: response.status, retryAfter: response.headers.get("retry-after") }, state.config);
+      await this.store.recordProbe(account.id, { ok: false, status: response.status, error });
+      return { accountId, label: account.label, ok: false, status: response.status, error };
+    } catch (cause: any) {
+      const error = cause?.name === "TimeoutError" ? "upstream request timed out" : String(cause?.message || cause);
+      await this.failure(account.id, { error }, state.config);
+      await this.store.recordProbe(account.id, { ok: false, error });
+      return { accountId, label: account.label, ok: false, error };
+    }
+  }
+
+  async probeAll(): Promise<ProbeResult[]> {
+    const state = await this.store.load();
+    const results: ProbeResult[] = [];
+    // Deliberately sequential: a health check must not create an avoidable
+    // provider-side burst or rate-limit the whole credential pool.
+    for (const account of state.accounts) {
+      if (account.enabled) results.push(await this.probeAccount(account.id));
+    }
+    return results;
+  }
+
   snapshot(state: PersistedState) {
     const now = Date.now();
     return state.accounts.map((a) => ({
@@ -268,6 +349,10 @@ export class CredentialPool {
       cooldownUntil: a.stats.cooldownUntil,
       lastStatus: a.stats.lastStatus,
       lastError: a.stats.lastError,
+      lastProbeAt: a.stats.lastProbeAt,
+      lastProbeOk: a.stats.lastProbeOk,
+      lastProbeStatus: a.stats.lastProbeStatus,
+      lastProbeError: a.stats.lastProbeError,
     }));
   }
 }

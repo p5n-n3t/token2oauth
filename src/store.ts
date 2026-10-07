@@ -238,8 +238,26 @@ export class StateStore {
         account.stats.cooldownUntil = undefined;
         account.stats.lastError = undefined;
         account.stats.lastStatus = undefined;
+        account.stats.lastProbeAt = undefined;
+        account.stats.lastProbeOk = undefined;
+        account.stats.lastProbeStatus = undefined;
+        account.stats.lastProbeError = undefined;
         account.stats.state = account.enabled ? "unknown" : "disabled";
       }
+    });
+  }
+
+  async recordProbe(
+    id: string,
+    result: { ok: boolean; status?: number; error?: string },
+  ): Promise<void> {
+    await this.update((state) => {
+      const account = state.accounts.find((a) => a.id === id);
+      if (!account) return;
+      account.stats.lastProbeAt = Date.now();
+      account.stats.lastProbeOk = result.ok;
+      account.stats.lastProbeStatus = result.status;
+      account.stats.lastProbeError = result.error;
     });
   }
 }
