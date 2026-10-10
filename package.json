@@ -7,7 +7,24 @@
   "bin": {
     "token2oauth": "dist/cli.js"
   },
-  "files": ["dist", "docs", "supervisor/snooze/*.py", "supervisor/snooze/adapters/*.py", "supervisor/LICENSE", "supervisor/THIRD_PARTY_NOTICES.md", "supervisor/SECURITY.md", "supervisor/install.sh", "install.sh", "uninstall.sh", "LICENSE", "README.md", "SECURITY.md", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "docs",
+    "supervisor/snooze/*.py",
+    "supervisor/snooze/adapters/*.py",
+    "supervisor/snooze/static/**",
+    "supervisor/LICENSE",
+    "supervisor/THIRD_PARTY_NOTICES.md",
+    "supervisor/SECURITY.md",
+    "supervisor/UPSTREAM.md",
+    "supervisor/install.sh",
+    "install.sh",
+    "uninstall.sh",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "dev": "tsx src/cli.ts serve",
     "build": "tsc -p tsconfig.json",
