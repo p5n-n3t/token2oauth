@@ -67,6 +67,7 @@ export interface JobWorker {
 
 const MODEL = "gpt-6-luna";
 const MAX_TEXT = 2_048;
+const MAX_ASSISTANT_BYTES = 32 * 1_024;
 const MAX_TRANSCRIPT_CHARS = 250_000;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const MESSAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -130,8 +131,8 @@ function newestAssistant(transcript: unknown, dispatchAtSeconds: number): { text
     }
     assistantText = parts.join("");
   }
-  if (assistantText === undefined) return undefined;
-  return { text: assistantText.slice(0, MAX_TEXT), at };
+  if (assistantText === undefined || new TextEncoder().encode(assistantText).byteLength > MAX_ASSISTANT_BYTES) return undefined;
+  return { text: assistantText, at };
 }
 function validOperation(value: unknown): value is JobOperation {
   const row = object(value);
