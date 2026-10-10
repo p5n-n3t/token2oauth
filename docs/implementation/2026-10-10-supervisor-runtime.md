@@ -1,0 +1,27 @@
+# Supervisor runtime composition (2026-10-10)
+
+## Delivered
+
+`token2oauth serve --supervisor-config <private-json-path>` is the sole opt-in. Without the flag, startup keeps the existing MCP/admin routes and does not spawn Python. On opt-in, Token2OAuth validates the owner-only config, checks bound accounts are enabled native LightSprint accounts, starts the packaged Snooze Python bridge over a private Unix socket, and injects a `SupervisorRuntime` as the backend behind the existing OAuth-scoped MCP job-tool interceptor and admin router. The child receives no provider credentials; the R12 `LightSprintJobsAdapter` remains the intended Node-side credential boundary, but the runtime does not instantiate it while R21/R22 packets are incompatible.
+
+Config is version 1 and accepts only `version`, `projects`, `maxWorkers`, `allowUnknownQuota`, and bounded `localLimits`. A project binds `projectId` to explicit `clientIds`, `accountIds`, and registered sessions (`sessionId`, `accountId`, `model`). Unknown quota must be acknowledged as `true`; registered model is restricted to `gpt-6-luna`. The config must be a regular file owned by the current user with mode 0600 or stricter, <=64 KiB. It cannot set executables or environment variables. Limits are capped at 100 tasks, 1 MiB per job and 32 KiB per text output. The bridge child inherits a private umask so the Unix socket is private from creation.
+
+The MCP layer retains the existing separate `jobs:read` / `jobs:write` OAuth scopes and intercepts local job tool names after OAuth authentication, before upstream routing. Runtime authorization additionally requires the trusted caller client ID and exact project binding; submitted account IDs must be within that project. `job_submit` maps to Snooze `POST /v1/assignments`; `job_status` maps to the exact assignment read; `job_inbox` reads events and filters them to the authorized project. Status reads re-check project identity before returning bounded data. Because no compatible worker is running, accepted receipts and status explicitly return `dispatchEnabled: false` with `worker_contract_mismatch`; queued work is durable but not executed. The route allowlist adds only `POST /v1/assignments`; traversal and unrelated paths remain rejected. Admin assignment listing uses the already session-authenticated admin API route.
+
+The MCP shape is retained for DAGs up to the configured limit. Coding output's `repositoryId` is translated to Snooze's `repository`; coding allowed paths can provide path scopes, and scope-less ordinary outputs receive a namespaced supervisor output path. Snooze currently requires a local `inputRef` and SHA-256 on every task, so the adapter generates a namespaced local ref and a digest of the normalized task packet; these are adapter bookkeeping values, not a caller-supplied source-content checksum.
+
+## Verified boundary and blockers
+
+The current R21 Python assignment validator requires at least two distinct eligible accounts, nonempty scopes and a local ref/hash. It also requires a registered-session packet to contain session and account IDs. The runtime rejects single-account assignments, binds existing-session tasks to an explicitly configured session/account, and rejects `fresh` execution. Session model configuration is currently declarative only; it is not a launch selector.
+
+The current R21 operation claim response contains assignment/task IDs and phase metadata, but omits task instructions, output contract and registered-session details required by the current R22 `createJobWorker` operation handlers. Starting R22 now would durably claim and reject operations; this runtime deliberately does not start the worker. No task-result artifact endpoint exists in the current bridge response, and its dispatch controls are global rather than project-scoped. Accordingly, `job_results` reports results unavailable, project-scoped `job_control` is rejected, `job_workers` returns configured account IDs with quota/capacity `unknown`, and no operation polling is active. These are explicit limitations rather than inferred completion or quota.
+
+The next integration change belongs in R21's bridge/operation DTO: return a validated bounded task packet (including its registered session binding) with each claim and provide project-scoped result, worker observation and control APIs. Then wire `createJobWorker` from R22 plus `LightSprintJobsAdapter` from R12, revalidate account eligibility immediately before execution, and add end-to-end operation/restart tests. Keep fresh launch disabled until its packet round-trip contract is verified.
+
+## Verification
+
+- `npm test`: passed, 165 tests (includes TypeScript build and the new runtime test).
+- `python3 -m unittest tests.test_bridge tests.test_jobs`: passed, 12 tests.
+- Real local Unix-socket integration test submitted an assignment, checked cross-client isolation, restarted the bridge, and confirmed SQLite state survived; no provider calls were made.
+- `npm pack --dry-run --json`: passed; the package contains `supervisor/snooze` Python sources and license/security notices, not the frontend tree.
+- No UI changed. `flow-diff` Mermaid rendering was unavailable because `mmdc` is not installed; adding dependencies is outside this assignment.
