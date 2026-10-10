@@ -1,24 +1,18 @@
-# Token2OAuth × Snooze control-plane UI
+# Token2OAuth × Snooze control-plane UI integration
 
-Implemented a standalone typed renderer in `src/supervisor-ui.ts`. It accepts an explicit snapshot of provider/account/workspace/worker hierarchy, capacity and quota observations, jobs, tasks, workers, events, inbox, supervisor/orchestrator health, optional measured series, and loading/error state. It emits a self-contained, script-free HTML document intended for a later authenticated server mount; this change does not mount routes or add operational writes.
+Mounted `GET /admin/supervisor/:projectId` through the existing supervisor admin router, which is registered before `AdminUi`. The route requires the existing admin session and reads only `SupervisorBackend.readAdmin(projectId)`. Snapshot JSON and live-feed responses also require that session. Backend errors remain visible as a generic dashboard error; internal exception details are not reflected.
 
-## Design and critique
+## Safety and behavior
 
-The visual direction is a cloud workforce command desk: cool paper and slate-blue surfaces, ink typography, restrained copper for warnings, and blue for supplied capacity. Navigation stays in a narrow responsive rail; the main canvas gives workforce distribution the strongest visual weight, with jobs/dependencies, measured history, timeline, inbox, and workers alongside it. Provider → account → workspace → worker is a native `<details>/<summary>` hierarchy, retaining keyboard operation without JavaScript. Native focus indicators, contrast-minded color pairing, small-screen layout, and reduced-motion rules are included.
+- Every new supervisor HTML/JSON route sets `Cache-Control: no-store`, frame denial, `nosniff`, no-referrer, and a nonce-bearing CSP before authentication. Inline polling is nonce protected; styles are self-contained and there are no external assets.
+- Admin data passes through the existing telemetry redactor and bounded object/array/string limits; encoded snapshots above 512 KiB are rejected. Normalization reads only recognized fields. Missing provider groups, quotas, health, and events remain unknown/empty; provider quota is never inferred from local worker capacity.
+- The timeline is filtered by bounded `search`, `severity`, and `pause` query parameters. `/admin/api/v1/supervisor/:projectId/live` produces redacted/escaped event HTML and current supplied health from a fresh project-scoped backend read. The client polls same-origin every 15 seconds, shows errors, and changes only the event and health nodes so the workforce disclosures and unrelated focus remain intact. “Pause live updates” clears the timer; “Resume” restarts it; `pagehide` cleans up.
+- No dispatch mutation controls were added to the UI. The existing revision-fenced control endpoint and CSRF check remain available and unchanged in behavior; invalid/missing revisions are rejected more strictly.
 
-Critique before implementation: the existing Token2OAuth admin UI is a dark, dense form-and-card console with uppercase micro-labels and decorative gradients. Reusing it would blur operational ownership and reproduce its visual noise. This module instead distinguishes measured state from missing observations, avoids action buttons without a real endpoint, and uses one nested distribution view rather than another generic metric-card grid. Inline CSS is self-contained like the current server-rendered pages; the module adds no scripts, fonts, assets, or external requests.
+## Design
 
-## Data and safety behavior
+The operations desk keeps the cool paper/slate palette, ink hierarchy, restrained copper warnings, and nested provider → account → workspace → worker disclosures established in the standalone renderer. It remains responsive, keyboard-accessible, and reduced-motion aware. This is designed as a command view, not an extension of the dark settings form grid.
 
-- Capacity/quota meters render only when both values are finite and the denominator is positive; exact used/limit values remain visible. Missing or unusable denominators say “Unknown denominator.”
-- Snapshot-provided time, health, work, inbox, events, and series are the only rendered observations. Missing fields are described as unknown/unavailable; there is no generated clock, animation, synthetic traffic, or inferred provider quota.
-- Event search/severity/pause controls use a GET form and renderer options, filtering only the bounded in-memory snapshot provided by the integration. Raw disclosure uses the existing bounded `telemetry.redact` sanitizer before HTML escaping.
-- Lists are capped (default 60, hard maximum 200); empty, loading, and error states are explicit. No pause/resume/retry/write control was invented.
+## Verification and limits
 
-## Verification
-
-`test/supervisor-ui.test.mjs` covers nested native disclosures, known versus unknown denominators, escaping and raw-secret redaction, local filters, bounded records, empty/loading/error rendering, absence of fabricated controls/traffic, and supplied time-series values. Run `npm test` for TypeScript compilation and the complete Node test suite.
-
-## Limits
-
-This is a UI module only. `src/server.ts` and `src/ui.ts` were not changed; a later integration must map authoritative supervisor data and query parameters into this renderer, provide authenticated routing/CSP policy, and decide which operational endpoints exist. No browser preview or screenshot is available from this isolated worktree, and no live supervisor/provider execution was performed.
+`test/supervisor-api.test.mjs` exercises admin authentication, response security headers, project scoping, bounded/redacted snapshots, filtered live payloads, visible backend failures, and unchanged CSRF enforcement for revision-fenced control. `test/supervisor-ui.test.mjs` covers normalization, escaping, unknown denominators, filtering, and nonce/pause/disconnect polling behavior. The test suite is run with `npm test`. No isolated browser preview was available for this worktree, so there is no screenshot proof; the frontend renderer is verified by tests and server response assertions only.

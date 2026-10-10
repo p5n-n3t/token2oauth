@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderSupervisorDashboard } from "../dist/supervisor-ui.js";
+import vm from "node:vm";
+import { normalizeSupervisorSnapshot, renderSupervisorDashboard } from "../dist/supervisor-ui.js";
 
 test("renders nested workforce hierarchy with native keyboard disclosures", () => {
   const html = renderSupervisorDashboard({ providers: [{ id: "p", label: "Provider", status: "healthy", accounts: [{ id: "a", label: "Account", status: "ready", workspaces: [{ id: "w", label: "Workspace", workers: [{ id: "worker-1", status: "working" }] }] }] }] });
@@ -55,4 +56,68 @@ test("time series use only supplied points and malformed timestamps degrade safe
   assert.match(html, /Measured values: 2jobs · 5jobs/);
   assert.match(html, /Time unavailable/);
   assert.doesNotMatch(html, /setInterval|Math\.random|Loading traffic/);
+});
+
+test("live polling is nonce-gated and preserves unrelated hierarchy/focus nodes", () => {
+  const standalone = renderSupervisorDashboard({});
+  assert.doesNotMatch(standalone, /id="live-pause"|<script\b/);
+  const html = renderSupervisorDashboard({}, { nonce: "nonce-value", liveFeedUrl: "/admin/api/v1/supervisor/project/live" });
+  assert.match(html, /<script nonce="nonce-value">/);
+  assert.match(html, /new URL\(root\.dataset\.feedUrl,location\.href\)/);
+  assert.match(html, /url\.origin!==location\.origin/);
+  assert.match(html, /clearInterval\(timer\)/);
+  assert.match(html, /addEventListener\("pagehide"/);
+  assert.match(html, /Live updates paused/);
+  assert.match(html, /id="live-pause" type="button"/);
+  assert.match(html, /document\.activeElement\.closest\("#live-events"\)/);
+  assert.match(html, /list\.innerHTML=payload\.eventsHtml/);
+  const pollScript = html.match(/<script nonce="nonce-value">([\s\S]*?)<\/script>/)?.[1] || "";
+  assert.doesNotMatch(pollScript, /getElementById\("workforce"\)|getElementById\("live-health"\).*innerHTML/);
+});
+
+test("live pause stops polling and pagehide clears the interval", async () => {
+  const html = renderSupervisorDashboard({}, { nonce: "n", liveFeedUrl: "/admin/api/v1/supervisor/p/live" });
+  const script = html.match(/<script nonce="n">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script);
+  const events = { innerHTML: "initial" };
+  const status = { textContent: "" };
+  const button = { textContent: "", attributes: {}, listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; }, setAttribute(name, value) { this.attributes[name] = value; } };
+  const root = { dataset: { feedUrl: "/admin/api/v1/supervisor/p/live" } };
+  const nodes = { "live-shell": root, "live-pause": button, "live-status": status, "live-events": events, "event-filter": null };
+  const listeners = {};
+  let nextTimer = 0;
+  const intervals = new Map();
+  const cleared = [];
+  const health = { textContent: "unknown" };
+  const context = {
+    URL,
+    location: { href: "https://local.test/admin/supervisor/p", origin: "https://local.test" },
+    document: { hidden: false, activeElement: null, getElementById: (id) => nodes[id] || null, querySelector: (selector) => selector.includes("supervisor") ? health : null, addEventListener: (name, fn) => { listeners[name] = fn; } },
+    window: { addEventListener: (name, fn) => { listeners[name] = fn; } },
+    fetch: async (url) => ({ ok: true, json: async () => ({ ok: true, eventsHtml: "<p>fresh</p>", supervisor: "healthy", orchestrator: "unknown" }) }),
+    setInterval: (fn) => { const id = ++nextTimer; intervals.set(id, fn); return id; },
+    clearInterval: (id) => { cleared.push(id); intervals.delete(id); },
+  };
+  vm.runInNewContext(script, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.innerHTML, "<p>fresh</p>");
+  assert.equal(health.textContent, "healthy");
+  assert.equal(intervals.size, 1);
+  button.listeners.click();
+  assert.equal(intervals.size, 0);
+  assert.equal(status.textContent, "Live updates paused");
+  button.listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(intervals.size, 1);
+  listeners.pagehide();
+  assert.equal(intervals.size, 0);
+  assert.ok(cleared.length >= 2);
+});
+
+test("trusted snapshot normalization preserves absent observations as unknown", () => {
+  const snapshot = normalizeSupervisorSnapshot({ summary: { active_tasks: 9 }, accounts: [{ id: "account-1", capacity: 5 }] });
+  assert.equal(snapshot.providers, undefined);
+  assert.equal(snapshot.events, undefined);
+  assert.equal(snapshot.supervisor, undefined);
+  assert.equal(snapshot.orchestrator, undefined);
 });
