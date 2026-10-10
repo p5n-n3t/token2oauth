@@ -16,7 +16,7 @@ function validJob() {
   return {
     schemaVersion: 1, jobId: "job-1", idempotencyKey: "idem-1", projectId: "project-1",
     eligibleAccountIds: ["account-a"],
-    tasks: [{ taskId: "task-1", dependsOn: [], scopeKeys: [], instructions: "Write a short result", execution: { mode: "existing-session" }, output: { kind: "text", maxBytes: 1024, format: "plain text" } }],
+    tasks: [{ taskId: "task-1", dependsOn: [], scopeKeys: ["path:src/result.txt"], instructions: "Write a short result", execution: { mode: "existing-session" }, output: { kind: "text", maxBytes: 1024, format: "plain text", expectedMarker: "DONE-1" } }],
   };
 }
 
@@ -32,7 +32,10 @@ test("job submission validates bounded DAGs and permits a single eligible accoun
   assert.throws(() => validateJobSubmission(tooManyDeps), /at most 8/);
   const badPaths = validJob();
   badPaths.tasks[0].output = { kind: "coding-artifact", repositoryId: "repo", allowedPaths: [42] };
-  assert.throws(() => validateJobSubmission(badPaths), /allowedPaths must contain strings/);
+  assert.throws(() => validateJobSubmission(badPaths), /bounded text output only/);
+  const noMarker = validJob();
+  delete noMarker.tasks[0].output.expectedMarker;
+  assert.throws(() => validateJobSubmission(noMarker), /expectedMarker/);
 });
 
 test("job scopes remain separate", () => {

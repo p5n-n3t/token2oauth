@@ -94,7 +94,7 @@ function validateLimit(value: number, max: number, code: string): number {
 }
 
 function isSafeId(value: string): boolean {
-  return /^[A-Za-z0-9_-]{1,128}$/.test(value) && value !== "." && value !== "..";
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 }
 
 /** Only the private supervisor contract is reachable through this client. */
@@ -127,6 +127,7 @@ export function isAllowedSupervisorRoute(method: string, route: string): boolean
   // MCP job submissions are already authorized by Token2OAuth before reaching
   // this private, bearer-authenticated Unix-socket boundary.
   if (path === "/v1/assignments" && method === "POST") return parsed.search === "";
+  if (path === "/v1/accounts" && method === "POST") return parsed.search === "";
   if (path === "/admin/api/v1/assignments" && method === "GET") {
     allowedQuery = ["projectId", "offset", "limit"];
   } else if (path === "/admin/api/v1/events" && method === "GET") {
@@ -136,12 +137,16 @@ export function isAllowedSupervisorRoute(method: string, route: string): boolean
   } else if (path === "/v1/operations/claim" && method === "POST") {
     return parsed.search === "";
   } else {
-    const approval = path.match(/^\/admin\/api\/v1\/assignments\/([A-Za-z0-9_-]{1,128})\/approve$/);
-    const assignment = path.match(/^\/admin\/api\/v1\/assignments\/([A-Za-z0-9_-]{1,128})$/);
-    const result = path.match(/^\/v1\/operations\/([A-Za-z0-9_-]{1,128})\/result$/);
+    const approval = path.match(/^\/admin\/api\/v1\/assignments\/([A-Za-z0-9._:-]{1,128})\/approve$/);
+    const assignment = path.match(/^\/admin\/api\/v1\/assignments\/([A-Za-z0-9._:-]{1,128})$/);
+    const result = path.match(/^\/v1\/operations\/([A-Za-z0-9._:-]{1,128})\/result$/);
+    const ownedResult = path.match(/^\/v1\/assignments\/([A-Za-z0-9._:-]{1,128})\/results$/);
+    const cancel = path.match(/^\/v1\/assignments\/([A-Za-z0-9._:-]{1,128})\/cancel$/);
     if (approval && isSafeId(approval[1]) && method === "POST") return parsed.search === "";
     if (assignment && isSafeId(assignment[1]) && method === "GET") return parsed.search === "";
     if (result && isSafeId(result[1]) && method === "POST") return parsed.search === "";
+    if (ownedResult && isSafeId(ownedResult[1]) && method === "GET") return parsed.search === "";
+    if (cancel && isSafeId(cancel[1]) && method === "POST") return parsed.search === "";
     return false;
   }
 
@@ -324,13 +329,18 @@ export class SupervisorBridge {
     method: BridgeMethod,
     route: string,
     body?: unknown,
-    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+    options: { timeoutMs?: number; signal?: AbortSignal; ownerPrincipalId?: string; clientId?: string } = {},
   ): Promise<T | undefined> {
     if (this.#state !== "running" || !this.#bearer || !this.#child || this.#childExited) {
       throw new SupervisorBridgeError("not_running");
     }
     if (!isAllowedSupervisorRoute(method, route)) throw new SupervisorBridgeError("route_not_allowed");
     const timeoutMs = validateLimit(options.timeoutMs ?? this.#requestTimeoutMs, MAX_TIMEOUT_MS, "invalid_request_timeout");
+    if ((options.ownerPrincipalId === undefined) !== (options.clientId === undefined) ||
+        (options.ownerPrincipalId !== undefined && !isSafeId(options.ownerPrincipalId)) ||
+        (options.clientId !== undefined && !isSafeId(options.clientId))) {
+      throw new SupervisorBridgeError("invalid_owner_context");
+    }
     if (options.signal?.aborted) throw new SupervisorBridgeError("request_cancelled");
 
     let requestBody: Buffer | undefined;
@@ -368,6 +378,10 @@ export class SupervisorBridge {
           headers: {
             authorization: `Bearer ${this.#bearer}`,
             accept: "application/json",
+            ...(options.ownerPrincipalId && options.clientId ? {
+              "x-owner-principal": options.ownerPrincipalId,
+              "x-client-id": options.clientId,
+            } : {}),
             ...(requestBody ? { "content-type": "application/json", "content-length": String(requestBody.length) } : {}),
           },
           ...(requestBody ? { body: requestBody } : {}),
@@ -451,9 +465,10 @@ export class SupervisorBridge {
         const info = await lstat(this.socketPath);
         if (info.isSymbolicLink() || !info.isSocket()) throw new SupervisorBridgeError("unsafe_socket");
         const uid = currentUid();
-        if ((uid !== undefined && info.uid !== uid) || (info.mode & 0o777) !== SOCKET_MODE) {
+        if (uid !== undefined && info.uid !== uid) {
           throw new SupervisorBridgeError("unsafe_socket_permissions");
         }
+        if ((info.mode & 0o777) !== SOCKET_MODE) throw new SupervisorBridgeError("unsafe_socket_permissions");
         this.#socketIdentity = { dev: info.dev, ino: info.ino, uid: info.uid, mode: info.mode & 0o777 };
         return;
       } catch (error) {
