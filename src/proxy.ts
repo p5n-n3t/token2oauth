@@ -14,6 +14,9 @@ import {
 } from "./tool-policy.js";
 import { parseClientPayload, readBodyLimited, rewriteServerBody, serverMessages, type ParsedClientPayload } from "./jsonrpc-wire.js";
 import type { TelemetryRecorder } from "./telemetry.js";
+import { JOB_TOOL_DEFINITIONS, isJobToolName, requiredJobScope, type JobToolName } from "./job-submit.js";
+import { JobInputError } from "./job-submit.js";
+import { SupervisorApi, SupervisorUnavailable } from "./supervisor-api.js";
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -157,20 +160,15 @@ export class McpProxy {
     private readonly store: StateStore,
     private readonly pool: CredentialPool,
     private readonly telemetry?: TelemetryRecorder,
+    private readonly supervisor = new SupervisorApi(),
   ) {}
 
   handler = async (req: Request, res: Response) => {
     const startedAt = Date.now();
     let state = await this.store.load();
-    if (!state.config.upstreamUrl) {
-      return res.status(503).json({
-        error: "upstream_not_configured",
-        message: "Set the upstream MCP URL in the Token2OAuth admin page or CLI.",
-      });
-    }
-
     const body = requestBody(req);
     const rpc = req.method === "POST" ? parseClientPayload(body) : undefined;
+    const claims = (res.locals as any).oauthClaims as AccessClaims | undefined;
     const described = describeRequest(req, rpc);
     const record = (input: { accountId?: string; status?: number; attempts: number; errorClass?: string; message?: string }) => {
       this.telemetry?.recordGateway({
@@ -185,6 +183,14 @@ export class McpProxy {
         message: input.message,
       });
     };
+
+    // Gateway-local jobs are intercepted after OAuth authentication and before
+    // policy/pool selection. Exact names never fall through to an upstream.
+    if (await this.interceptJobCalls(req, res, rpc, claims, startedAt, record)) return;
+    if (!state.config.upstreamUrl) {
+      record({ status: 503, attempts: 0, errorClass: "upstream-not-configured" });
+      return res.status(503).json({ error: "upstream_not_configured", message: "Set the upstream MCP URL in the Token2OAuth admin page or CLI." });
+    }
 
     // ---- Tool policy: enforced here, server-side, before any upstream I/O.
     let policy: CompiledToolPolicy | undefined;
@@ -248,7 +254,6 @@ export class McpProxy {
 
     // ---- Ownership: existing sessions and task follow-ups go to their owner.
     const incomingSession = req.header("mcp-session-id") || undefined;
-    const claims = (res.locals as any).oauthClaims as AccessClaims | undefined;
     const resolution = this.pool.ownership.resolve({
       sessionId: incomingSession,
       request: rpc?.messages.find((m) => typeof m.method === "string"),
@@ -293,7 +298,9 @@ export class McpProxy {
     let lastAccountId: string | undefined;
     let lastErrorClass: string | undefined;
     let observedProtocolErrorClass: string | undefined;
-    const wantsToolsList = Boolean(policy?.hideDenied) && Boolean(rpc?.messages.some((m) => m.method === "tools/list"));
+    const localJobTools = this.availableJobTools(claims);
+    const isToolsListRequest = Boolean(rpc?.messages.some((m) => m.method === "tools/list"));
+    const wantsToolsList = (Boolean(policy?.hideDenied) || localJobTools.length > 0) && isToolsListRequest;
     const observeTasks = Boolean(rpc?.messages.some((m) => m.method === "tools/call"));
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -339,7 +346,7 @@ export class McpProxy {
 
         const observeProtocolResponse = Boolean(
           upstream.ok && observeTasks && upstream.body && req.method !== "HEAD" &&
-          !(wantsToolsList && policy && req.method !== "HEAD"),
+          !(wantsToolsList && req.method !== "HEAD"),
         );
         if (!observeProtocolResponse) this.recordAttempt(account.id, described, upstream.status, attemptStarted);
         const upstreamSession = upstream.headers.get("mcp-session-id") || undefined;
@@ -352,8 +359,8 @@ export class McpProxy {
           else await this.pool.success(account.id, upstream.status, affinityKey);
           const contentType = upstream.headers.get("content-type");
 
-          if (wantsToolsList && policy && req.method !== "HEAD") {
-            await this.sendFiltered(res, upstream, policy, rpc!);
+          if (wantsToolsList && req.method !== "HEAD") {
+            await this.sendFiltered(res, upstream, policy, rpc!, localJobTools);
             record({ accountId: account.id, status: upstream.status, attempts });
             return;
           }
@@ -503,33 +510,105 @@ export class McpProxy {
     });
   }
 
-  /** Buffer a tools/list response and remove tools hidden by policy. */
+  /** Buffer tools/list when applying policy and/or adding OAuth-scoped local tools. */
   private async sendFiltered(
     res: Response,
     upstream: globalThis.Response,
-    policy: CompiledToolPolicy,
+    policy: CompiledToolPolicy | undefined,
     rpc: ParsedClientPayload,
+    localTools: readonly Record<string, unknown>[],
   ): Promise<void> {
     const contentType = upstream.headers.get("content-type");
     const buffered = await readBodyLimited(upstream, MAX_FILTERED_RESPONSE_BYTES);
     const methods = new Map<string | number, string>();
     for (const message of rpc.messages) {
-      if (message.id !== undefined && message.id !== null && typeof message.method === "string") {
-        methods.set(message.id, message.method);
-      }
+      if (message.id !== undefined && message.id !== null && typeof message.method === "string") methods.set(message.id, message.method);
     }
-    const rewritten = buffered === undefined
-      ? undefined
-      : rewriteServerBody(contentType, buffered.toString("utf8"), (payload) => filterServerMessage(policy, payload, methods));
+    const rewritten = buffered === undefined ? undefined : rewriteServerBody(contentType, buffered.toString("utf8"), (payload) => {
+      const filtered = policy ? filterServerMessage(policy, payload, methods) : payload;
+      const augment = (message: JsonRpcMessage): JsonRpcMessage => {
+        if (message.id === undefined || message.id === null || methods.get(message.id) !== "tools/list" || !localTools.length || !message.result || typeof message.result !== "object") return message;
+        const result = message.result as Record<string, unknown>;
+        const tools = Array.isArray(result.tools) ? result.tools : [];
+        const existingNames = new Set(tools.flatMap((tool) => tool && typeof tool === "object" && typeof (tool as any).name === "string" ? [(tool as any).name] : []));
+        if (localTools.some((tool) => existingNames.has(tool.name))) return rpcError(message.id, -32603, "The upstream MCP server uses a reserved Token2OAuth job tool name.");
+        return { ...message, result: { ...result, tools: [...tools, ...localTools] } };
+      };
+      return Array.isArray(filtered) ? filtered.map(augment) : augment(filtered);
+    });
     if (rewritten === undefined) {
-      // Fail closed: never show an unfiltered tool list while a policy is active.
-      res.status(502).json(rpcError(rpc.messages[0]?.id, -32603,
-        "Token2OAuth could not apply the tool policy to the upstream tools/list response."));
+      res.status(502).json(rpcError(rpc.messages[0]?.id, -32603, "Token2OAuth could not safely apply the tools/list update."));
       return;
     }
     copyResponseHeaders(upstream.headers, res);
     res.status(upstream.status);
     res.send(rewritten);
+  }
+
+  private availableJobTools(claims: AccessClaims | undefined): Record<string, unknown>[] {
+    if (!this.supervisor.enabled || !claims) return [];
+    const scopes = new Set(claims.scope.split(/\s+/));
+    return JOB_TOOL_DEFINITIONS.filter((definition) => scopes.has(requiredJobScope(definition.name))).map((definition) => ({ ...definition }));
+  }
+
+  private async interceptJobCalls(
+    req: Request,
+    res: Response,
+    rpc: ParsedClientPayload | undefined,
+    claims: AccessClaims | undefined,
+    _startedAt: number,
+    record: (input: { status?: number; attempts: number; errorClass?: string; message?: string }) => void,
+  ): Promise<boolean> {
+    if (req.method !== "POST" || !rpc) return false;
+    const local = rpc.messages.filter((message) => message.method === "tools/call" && isJobToolName(message.params?.name));
+    if (!local.length) return false;
+    const mixed = rpc.messages.some((message) => !local.includes(message));
+    if (mixed) {
+      record({ status: 400, attempts: 0, errorClass: "mixed-local-batch" });
+      res.status(400).json({ error: "mixed_local_tool_batch_unsupported" });
+      return true;
+    }
+    const scopeSet = new Set(claims?.scope.split(/\s+/) || []);
+    const missing = local.find((message) => !scopeSet.has(requiredJobScope(message.params!.name as JobToolName)));
+    if (missing || !claims) {
+      const responses = local.filter((message) => message.id !== undefined).map((message) => rpcError(message.id, -32003, "insufficient_scope", { requiredScope: requiredJobScope(message.params!.name as JobToolName) }));
+      record({ status: 403, attempts: 0, errorClass: "insufficient-scope" });
+      if (!responses.length) return res.status(403).json({ error: "insufficient_scope" }), true;
+      res.status(403).json(rpc.batch ? responses : responses[0]);
+      return true;
+    }
+    if (!this.supervisor.enabled) {
+      const responses = local.filter((message) => message.id !== undefined).map((message) => rpcError(message.id, -32000, "durable supervisor is not configured"));
+      record({ status: 503, attempts: 0, errorClass: "supervisor-unavailable" });
+      if (!responses.length) return res.status(202).end(), true;
+      res.status(503).json(rpc.batch ? responses : responses[0]);
+      return true;
+    }
+    const responses: JsonRpcMessage[] = [];
+    let status = 200;
+    for (const message of local) {
+      try {
+        const name = message.params!.name as JobToolName;
+        const value = await this.supervisor.callTool(name, message.params?.arguments ?? {}, claims.client_id);
+        const text = JSON.stringify(value ?? null);
+        if (Buffer.byteLength(text) > 1_048_576) throw new Error("result too large");
+        if (message.id !== undefined) responses.push({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text }] } });
+      } catch (error) {
+        if (error instanceof JobInputError) {
+          if (message.id !== undefined) responses.push(rpcError(message.id, -32602, error.message));
+        } else if (error instanceof SupervisorUnavailable) {
+          status = 503;
+          if (message.id !== undefined) responses.push(rpcError(message.id, -32000, "durable supervisor is not configured"));
+        } else {
+          status = 502;
+          if (message.id !== undefined) responses.push(rpcError(message.id, -32000, "supervisor operation failed"));
+        }
+      }
+    }
+    record({ status, attempts: 0, errorClass: status === 200 ? undefined : "supervisor-operation" });
+    if (!responses.length) return res.status(202).end(), true;
+    res.status(status).json(rpc.batch ? responses : responses[0]);
+    return true;
   }
 
   /** Pass a streamed response through unchanged while learning task ownership. */

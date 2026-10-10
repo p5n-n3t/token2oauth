@@ -114,7 +114,7 @@ export class OAuthService {
     res.json({
       resource: this.resource(state),
       authorization_servers: [issuer],
-      scopes_supported: ["mcp"],
+      scopes_supported: ["mcp", "jobs:read", "jobs:write"],
       bearer_methods_supported: ["header"],
       resource_name: "Token2OAuth MCP Gateway",
     });
@@ -131,7 +131,7 @@ export class OAuthService {
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
-      scopes_supported: ["mcp"],
+      scopes_supported: ["mcp", "jobs:read", "jobs:write"],
       token_endpoint_auth_methods_supported: ["none"],
       authorization_response_iss_parameter_supported: true,
     });
@@ -192,9 +192,10 @@ export class OAuthService {
     }
     const resource = String(q.resource || this.resource(state));
     if (resource !== this.resource(state)) throw new Error("resource does not match this MCP server");
-    const scope = String(q.scope || "mcp");
-    if (!scope.split(/\s+/).includes("mcp")) throw new Error("mcp scope is required");
-    return { client, redirectUri, resource, scope: "mcp" };
+    const requested = [...new Set(String(q.scope || "mcp").split(/\s+/).filter(Boolean))];
+    if (!requested.includes("mcp")) throw new Error("mcp scope is required");
+    if (requested.some((scope) => !["mcp", "jobs:read", "jobs:write"].includes(scope))) throw new Error("unsupported scope requested");
+    return { client, redirectUri, resource, scope: requested.join(" ") };
   }
 
   private authorizeGet = async (req: Request, res: Response) => {
@@ -219,7 +220,7 @@ button{width:100%;margin-top:18px;padding:13px 16px;border:0;border-radius:13px;
 </style></head><body><main class="shell"><div class="brand"><div class="logo">T2</div><div><strong>Token2OAuth</strong><div class="eyebrow">Secure MCP Gateway</div></div></div>
 <section class="card"><div class="eyebrow">Authorization request</div><h1>Connect this MCP to ChatGPT</h1>
 <p class="muted"><strong>${esc(validated.client.clientName || "OpenAI client")}</strong> is requesting access to the Token2OAuth MCP gateway. Upstream bearer credentials stay on this host and are never returned to the client.</p>
-<div class="pill">scope · mcp</div>
+<div class="pill">scope · ${esc(validated.scope)}</div>
 <form method="post" action="./authorize">${hidden}
 ${loggedIn ? '<input type="hidden" name="session_authorized" value="1"><input type="hidden" name="_csrf" value="' + esc(csrf) + '">' : '<label>Gateway admin password</label><input type="password" name="admin_password" autocomplete="current-password" required>'}
 <button type="submit">Authorize connection →</button></form>
