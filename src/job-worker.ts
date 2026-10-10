@@ -87,6 +87,37 @@ function field(source: unknown, ...keys: string[]): unknown {
 function resultRecord(value: unknown): Record<string, unknown> {
   return object(field(value, "value")) ?? object(value) ?? {};
 }
+function boundedLabel(value: unknown, max: number): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= max && value.trim() === value
+    ? value : undefined;
+}
+function sanitizedUsage(value: unknown): Record<string, number | string> | undefined {
+  const source = object(value);
+  if (!source) return undefined;
+  const usage: Record<string, number | string> = {};
+  // The native session-status API currently names this reported value
+  // aiGatewaySessionCostUsd; the worker receipt uses its stable contract name.
+  const cost = Object.hasOwn(source, "reportedSessionCostUsd")
+    ? source.reportedSessionCostUsd : source.aiGatewaySessionCostUsd;
+  if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) usage.reportedSessionCostUsd = cost;
+  const prompts = source.promptCount;
+  if (typeof prompts === "number" && Number.isSafeInteger(prompts) && prompts >= 0) usage.promptCount = prompts;
+  const budgetUsed = source.budgetUsed;
+  if (typeof budgetUsed === "number" && Number.isFinite(budgetUsed) && budgetUsed >= 0) usage.budgetUsed = budgetUsed;
+  const maxBudget = source.maxBudget;
+  if (typeof maxBudget === "number" && Number.isFinite(maxBudget) && maxBudget > 0) usage.maxBudget = maxBudget;
+  const fundingSource = boundedLabel(source.fundingSource, 64);
+  if (fundingSource !== undefined) usage.fundingSource = fundingSource;
+  const sandboxTier = boundedLabel(source.sandboxTier, 64);
+  if (sandboxTier !== undefined) usage.sandboxTier = sandboxTier;
+  return Object.keys(usage).length ? usage : undefined;
+}
+function addSessionMetadata(result: Record<string, unknown>, status: Record<string, unknown>): void {
+  const model = boundedLabel(field(status, "reportedModel", "model", "registeredModel"), 128);
+  if (model !== undefined) result.reportedModel = model;
+  const usage = sanitizedUsage(status);
+  if (usage !== undefined) result.usage = usage;
+}
 function isFreshAccepted(result: JobResult): boolean { return result.classification === "accepted"; }
 function errorCode(error: unknown): string {
   const raw = object(error)?.code ?? (error instanceof Error ? error.name : "operation_error");
@@ -228,7 +259,10 @@ export function createJobWorker(options: JobWorkerOptions): JobWorker {
         mutationStarted = true;
         const sent = await adapter.sendMessage(sessionId, message, clientMessageId); // exactly one call, never retried
         outcome = sent.classification;
-        if (outcome === "accepted") result = { sessionId, reportedModel: MODEL, status: "submitted" };
+        if (outcome === "accepted") {
+          result = { sessionId, status: "submitted" };
+          addSessionMetadata(result, status);
+        }
         else errorClass = text(sent.reason, 80) ?? (outcome === "ambiguous" ? "chat_ambiguous" : "chat_rejected");
         return await submit(op, outcome, result, errorClass);
       }
@@ -252,8 +286,7 @@ export function createJobWorker(options: JobWorkerOptions): JobWorker {
         // R21's registry accepts the session status (for example "idle") and
         // marks completion only from a fresh assistantText + numeric assistantAt.
         result = { sessionId, status };
-        const model = field(checked.status, "reportedModel", "model", "registeredModel");
-        if (typeof model === "string" && model.length <= 128) result.reportedModel = model;
+        addSessionMetadata(result, checked.status);
         if (fresh) {
           result.assistantText = fresh.text;
           result.assistantAt = fresh.at;
