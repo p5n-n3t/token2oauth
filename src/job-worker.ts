@@ -215,7 +215,7 @@ export function createJobWorker(options: JobWorkerOptions): JobWorker {
         const checked = await checkSession(adapter, sessionId);
         const status = checked.status;
         const registeredModel = field(status, "registeredModel", "model", "reportedModel");
-        const state = field(status, "status", "state");
+        const state = field(status, "sessionStatus", "status", "state");
         if (!status || checked.result.classification !== "accepted" || field(status, "isOwner") !== true ||
             field(status, "canSendMessage") !== true || registeredModel !== MODEL || !options.allowedModels.includes(String(registeredModel)) ||
             typeof state !== "string" || state.toLowerCase() !== "idle") {
@@ -239,7 +239,7 @@ export function createJobWorker(options: JobWorkerOptions): JobWorker {
           errorClass = checked.result.classification === "ambiguous" ? "status_ambiguous" : "status_unavailable";
           return await submit(op, checked.result.classification, {}, errorClass);
         }
-        const rawStatus = field(checked.status, "status", "state");
+        const rawStatus = field(checked.status, "sessionStatus", "status", "state");
         const status = typeof rawStatus === "string" ? rawStatus.slice(0, 80) : "unknown";
         let fresh: { text: string; at: number } | undefined;
         if (status.toLowerCase() === "idle") {

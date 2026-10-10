@@ -19,7 +19,10 @@ const pythonObservation = (id, accountId, dispatchAt) => ({
 function adapter(accountId, overrides = {}) {
   return {
     accountId,
-    sessionStatus: async () => ok(accountId, { isOwner: true, canSendMessage: true, model: "gpt-6-luna", status: "idle" }),
+    sessionStatus: async () => ok(accountId, { status: {
+      sessionId: `session-${accountId}`, isOwner: true, canSendMessage: true,
+      model: "gpt-6-luna", sessionStatus: "idle",
+    } }),
     sessionTranscript: async () => ok(accountId, { messages: [] }),
     sendMessage: async () => ok(accountId),
     stopSession: async () => ok(accountId),

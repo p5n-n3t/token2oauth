@@ -114,6 +114,15 @@ async function mcp(base, accessToken, id, name, toolArguments) {
 }
 
 async function toolsList(base, accessToken) {
+  const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json", accept: "application/json" };
+  const initialized = await jsonResponse(await fetch(`${base}/mcp`, { method: "POST", headers,
+    body: JSON.stringify({ jsonrpc: "2.0", id: "init", method: "initialize", params: {
+      protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "token2oauth-verifier", version: "1" },
+    } }) }));
+  if (initialized.result?.protocolVersion !== "2025-06-18" || !initialized.result?.capabilities?.tools) throw new Error("local_mcp_initialization_failed");
+  const notification = await fetch(`${base}/mcp`, { method: "POST", headers,
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
+  if (notification.status !== 204) throw new Error("local_mcp_initialized_notification_failed");
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) });
   const packet = await jsonResponse(response);
   if (!Array.isArray(packet?.result?.tools)) throw new Error("mcp_tools_list_unavailable");
