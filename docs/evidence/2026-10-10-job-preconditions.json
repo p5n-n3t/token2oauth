@@ -1,0 +1,41 @@
+{
+  "verifiedAt": "2026-10-10T16:50:28.638Z",
+  "observations": [
+    {
+      "accountId": "V0iI9ZYDWl6j",
+      "sessionId": "EqFCnELEALprgv_1RierY",
+      "workspaceId": "ZAPZKLoXANXz__Z1XvPy4",
+      "model": "gpt-6-luna",
+      "observedAt": "2026-10-10T16:50:28.229Z",
+      "isError": false,
+      "status": "idle",
+      "isOwner": true,
+      "canSendMessage": true,
+      "reportedModel": "gpt-6-luna"
+    },
+    {
+      "accountId": "DZGnca_Tap_H",
+      "sessionId": "ck7907TEyc4_2qljQnwlQ",
+      "workspaceId": "7JeCl7GVYwxnOpskvfS2Z",
+      "model": "gpt-6-luna",
+      "observedAt": "2026-10-10T16:50:28.627Z",
+      "isError": false,
+      "status": "idle",
+      "isOwner": true,
+      "canSendMessage": true,
+      "reportedModel": "gpt-6-luna"
+    },
+    {
+      "accountId": "YFi2EwrtdFDB",
+      "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+      "workspaceId": "de6CZvtpKiBdScX1qarB1",
+      "model": "gpt-6-luna",
+      "observedAt": "2026-10-10T16:50:27.825Z",
+      "isError": false,
+      "status": "idle",
+      "isOwner": true,
+      "canSendMessage": true,
+      "reportedModel": "gpt-6-luna"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -32,7 +32,7 @@ function args(argv) {
   return out;
 }
 
-const safeError = (error) => ({ name: error?.name || "Error", message: String(error?.message || "operation failed").slice(0, 240) });
+const safeError = (error) => ({ name: error?.name || "Error", code: /^[A-Za-z0-9_]{1,80}$/.test(error?.code || "") ? error.code : undefined, message: String(error?.message || "operation failed").slice(0, 240) });
 const jsonResponse = async (response) => {
   if (!response.ok) throw new Error(`local_gateway_http_${response.status}`);
   return response.json();
@@ -199,6 +199,7 @@ async function main() {
       selected.clientIds = [oauth.clientId];
       const runtimeConfigCopy = resolve(isolatedRuntimeDir, "runtime.json");
       await writeFile(runtimeConfigCopy, `${JSON.stringify(privateConfig, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      await mkdir(resolve(isolatedRuntimeDir, "bridge"), { mode: 0o700 });
       runtime = await createSupervisorRuntime({ configPath: runtimeConfigCopy, configDir: resolve(isolatedRuntimeDir, "bridge"), supervisorCwd: fileURLToPath(new URL("../supervisor/", import.meta.url)), store });
     } else {
       runtime = await createSupervisorRuntime({ configPath: resolve(options.config), configDir: isolatedRuntimeDir, supervisorCwd: fileURLToPath(new URL("../supervisor/", import.meta.url)), store });
