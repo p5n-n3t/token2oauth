@@ -187,6 +187,9 @@ export class McpProxy {
     // Gateway-local jobs are intercepted after OAuth authentication and before
     // policy/pool selection. Exact names never fall through to an upstream.
     if (await this.interceptJobCalls(req, res, rpc, claims, startedAt, record)) return;
+    const localJobTools = this.availableJobTools(claims);
+    if (!state.config.upstreamUrl && this.supervisor.enabled && localJobTools.length > 0 &&
+        await this.serveLocalJobDiscovery(req, res, rpc, localJobTools, record)) return;
     if (!state.config.upstreamUrl) {
       record({ status: 503, attempts: 0, errorClass: "upstream-not-configured" });
       return res.status(503).json({ error: "upstream_not_configured", message: "Set the upstream MCP URL in the Token2OAuth admin page or CLI." });
@@ -298,7 +301,6 @@ export class McpProxy {
     let lastAccountId: string | undefined;
     let lastErrorClass: string | undefined;
     let observedProtocolErrorClass: string | undefined;
-    const localJobTools = this.availableJobTools(claims);
     const isToolsListRequest = Boolean(rpc?.messages.some((m) => m.method === "tools/list"));
     const wantsToolsList = (Boolean(policy?.hideDenied) || localJobTools.length > 0) && isToolsListRequest;
     const observeTasks = Boolean(rpc?.messages.some((m) => m.method === "tools/call"));
@@ -549,6 +551,42 @@ export class McpProxy {
     if (!this.supervisor.enabled || !claims) return [];
     const scopes = new Set(claims.scope.split(/\s+/));
     return JOB_TOOL_DEFINITIONS.filter((definition) => scopes.has(requiredJobScope(definition.name))).map((definition) => ({ ...definition }));
+  }
+
+  /** Serve only OAuth-authorized local job tools when no general upstream exists. */
+  private async serveLocalJobDiscovery(
+    req: Request,
+    res: Response,
+    rpc: ParsedClientPayload | undefined,
+    tools: readonly Record<string, unknown>[],
+    record: (input: { status?: number; attempts: number; errorClass?: string }) => void,
+  ): Promise<boolean> {
+    if (req.method !== "POST" || !rpc || rpc.batch || rpc.messages.length !== 1) return false;
+    const message = rpc.messages[0]!;
+    if (message.method === "notifications/initialized" && message.id === undefined) {
+      record({ status: 204, attempts: 0 });
+      res.status(204).end();
+      return true;
+    }
+    if (message.id === undefined || message.id === null) return false;
+    if (message.method === "initialize") {
+      const requested = message.params?.protocolVersion;
+      const supported = ["2025-06-18", "2025-03-26"];
+      const protocolVersion = typeof requested === "string" && supported.includes(requested) ? requested : supported[0]!;
+      record({ status: 200, attempts: 0 });
+      res.status(200).json({ jsonrpc: "2.0", id: message.id, result: {
+        protocolVersion,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "Token2OAuth", version: "0.2.0" },
+      } });
+      return true;
+    }
+    if (message.method === "tools/list") {
+      record({ status: 200, attempts: 0 });
+      res.status(200).json({ jsonrpc: "2.0", id: message.id, result: { tools } });
+      return true;
+    }
+    return false;
   }
 
   private async interceptJobCalls(

@@ -105,7 +105,7 @@ test("job tools are scope-filtered and intercepted before upstream while ordinar
     await store.update((state) => {
       state.config.publicBaseUrl = base;
       state.config.basePath = "";
-      state.config.upstreamUrl = `http://127.0.0.1:${upstreamAddress.port}/mcp`;
+      state.config.upstreamUrl = "";
     });
     await store.addAccount({ label: "Test account", token: "test-secret" });
     const legacy = await oauthToken(base, "mcp");
@@ -118,12 +118,25 @@ test("job tools are scope-filtered and intercepted before upstream while ordinar
     assert.equal((await denied.json()).error.data.requiredScope, "jobs:write");
     assert.equal(upstreamCalls.length, beforeDenied, "unauthorized local tool calls never fall through");
     const legacyListing = await mcp(base, legacy, { jsonrpc: "2.0", id: 5, method: "tools/list" });
-    assert.deepEqual((await legacyListing.json()).result.tools.map((tool) => tool.name), ["ordinary"], "legacy mcp-only consent gains no job scopes");
+    assert.equal(legacyListing.status, 503, "clients without job scopes still need a configured upstream");
+    assert.deepEqual(upstreamCalls, [], "unconfigured gateway makes no upstream network request");
+
+    const initialized = await mcp(base, readOnly, { jsonrpc: "2.0", id: "init", method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1" } } });
+    assert.equal(initialized.status, 200);
+    const initResult = (await initialized.json()).result;
+    assert.equal(initResult.protocolVersion, "2025-03-26");
+    assert.deepEqual(initResult.capabilities, { tools: { listChanged: false } });
+    assert.deepEqual(initResult.serverInfo, { name: "Token2OAuth", version: "0.2.0" });
+    const initializedNotice = await mcp(base, readOnly, { jsonrpc: "2.0", method: "notifications/initialized" });
+    assert.equal(initializedNotice.status, 204);
 
     const listing = await mcp(base, readOnly, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     const listed = (await listing.json()).result.tools.map((tool) => tool.name);
-    assert.deepEqual(listed, ["ordinary", "job_status", "job_workers", "job_results", "job_inbox"]);
+    assert.deepEqual(listed, ["job_status", "job_workers", "job_results", "job_inbox"]);
     assert.ok(!listed.includes("job_submit") && !listed.includes("job_control"));
+    const writerListing = await mcp(base, writer, { jsonrpc: "2.0", id: 6, method: "tools/list" });
+    assert.deepEqual((await writerListing.json()).result.tools.map((tool) => tool.name), names);
 
     const accepted = await mcp(base, writer, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "job_submit", arguments: validJob() } });
     assert.equal(accepted.status, 200);
@@ -133,6 +146,14 @@ test("job tools are scope-filtered and intercepted before upstream while ordinar
     assert.equal(delegateCalls, 1, "the local gateway delegates exactly once");
     assert.match(JSON.parse((await accepted.json()).result.content[0].text).state, /queued/);
     assert.equal(upstreamCalls.filter((message) => message.method === "tools/call").length, 0);
+
+    const ordinaryWithoutUpstream = await mcp(base, writer, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "ordinary", arguments: {} } });
+    assert.equal(ordinaryWithoutUpstream.status, 503);
+    assert.deepEqual(upstreamCalls, [], "local discovery and job calls never touch upstream");
+
+    await store.update((state) => { state.config.upstreamUrl = `http://127.0.0.1:${upstreamAddress.port}/mcp`; });
+    const legacyWithUpstream = await mcp(base, legacy, { jsonrpc: "2.0", id: 8, method: "tools/list" });
+    assert.deepEqual((await legacyWithUpstream.json()).result.tools.map((tool) => tool.name), ["ordinary"], "legacy consent gains no job scopes");
 
     const ordinary = await mcp(base, writer, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "ordinary", arguments: {} } });
     assert.match((await ordinary.json()).result.content[0].text, /ordinary upstream result/);
