@@ -5,6 +5,7 @@ import socket
 import stat
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -31,7 +32,7 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 
-def call(path, method="GET", body=None, bearer=None, route="/admin/api/v1/assignments"):
+def call(path, method="GET", body=None, bearer=None, route="/admin/api/v1/assignments", owner=None, client=None):
     connection = UnixHTTPConnection(path)
     headers = {}
     payload = None
@@ -40,6 +41,10 @@ def call(path, method="GET", body=None, bearer=None, route="/admin/api/v1/assign
         headers["Content-Type"] = "application/json"
     if bearer is not None:
         headers["Authorization"] = "Bearer " + bearer
+    if owner is not None:
+        headers["X-Owner-Principal"] = owner
+    if client is not None:
+        headers["X-Client-Id"] = client
     connection.request(method, route, body=payload, headers=headers)
     response = connection.getresponse()
     data = response.read()
@@ -97,6 +102,83 @@ class PrivateBridgeTests(unittest.TestCase):
                   "registeredSessions": [{"id": "session-b", "model": "unknown", "workspace": "workspace-a"}]})
         self.assertEqual(status, 200)
         self.assertEqual(payload["accountId"], "account-b")
+
+    def test_owner_client_scope_is_exact_and_missing_scope_cannot_read_or_cancel(self):
+        def submit(identifier, key, *, owner=None, client=None):
+            body = assignment()
+            body["assignmentId"] = identifier
+            body["idempotencyKey"] = key
+            return call(str(self.socket_path), method="POST", route="/v1/assignments", bearer=self.bearer,
+                        body=body, owner=owner, client=client)
+
+        self.assertEqual(submit("legacy", "legacy-key")[0], 202)
+        self.assertEqual(submit("client-a-job", "client-a-key", owner="principal-a", client="client-a")[0], 202)
+        self.assertEqual(submit("client-b-job", "client-b-key", owner="principal-a", client="client-b")[0], 202)
+
+        status, listing = call(str(self.socket_path), bearer=self.bearer, owner="principal-a", client="client-a",
+                               route="/admin/api/v1/assignments?projectId=project-a")
+        self.assertEqual(status, 200)
+        self.assertEqual([row["assignmentId"] for row in listing["assignments"]], ["client-a-job"])
+        # The explicit admin route remains unfiltered when called without a scope.
+        status, admin = call(str(self.socket_path), bearer=self.bearer,
+                             route="/admin/api/v1/assignments/legacy")
+        self.assertEqual(status, 200)
+        self.assertEqual(admin["assignmentId"], "legacy")
+        status, admin_owned = call(str(self.socket_path), bearer=self.bearer,
+                                   route="/admin/api/v1/assignments/client-a-job")
+        self.assertEqual(status, 200)
+        self.assertEqual(admin_owned["assignmentId"], "client-a-job")
+        for assignment_id in ("legacy", "client-b-job"):
+            status, _ = call(str(self.socket_path), bearer=self.bearer, owner="principal-a", client="client-a",
+                             route=f"/admin/api/v1/assignments/{assignment_id}")
+            self.assertEqual(status, 404)
+
+        status, _ = call(str(self.socket_path), bearer=self.bearer, owner="principal-a", client="client-a",
+                         route="/v1/assignments/client-a-job/results")
+        self.assertEqual(status, 200)
+        for assignment_id in ("legacy", "client-b-job"):
+            status, _ = call(str(self.socket_path), bearer=self.bearer, owner="principal-a", client="client-a",
+                             route=f"/v1/assignments/{assignment_id}/results")
+            self.assertEqual(status, 404)
+        status, _ = call(str(self.socket_path), bearer=self.bearer,
+                         route="/v1/assignments/client-a-job/results")
+        self.assertEqual(status, 403)
+        status, _ = call(str(self.socket_path), method="POST", bearer=self.bearer,
+                         body={"expectedRevision": 1}, route="/v1/assignments/client-a-job/cancel")
+        self.assertEqual(status, 403)
+        status, _ = call(str(self.socket_path), method="POST", bearer=self.bearer, owner="principal-a", client="client-a",
+                         body={"expectedRevision": 1}, route="/v1/assignments/client-b-job/cancel")
+        self.assertEqual(status, 404)
+
+    def test_scoped_bridge_status_includes_persisted_timeline_observations(self):
+        body = assignment()
+        body["ownerPrincipalId"] = "ignored-untrusted"
+        body["clientId"] = "ignored-untrusted"
+        status, _ = call(str(self.socket_path), method="POST", route="/v1/assignments", bearer=self.bearer,
+                         body=body, owner="principal-a", client="client-a")
+        self.assertEqual(status, 202)
+        _, operation = call(str(self.socket_path), method="POST", body={"workerId": "node-1"}, bearer=self.bearer,
+                            route="/v1/operations/claim")
+        call(str(self.socket_path), method="POST", body={"workerId": "node-1", "outcome": "accepted"}, bearer=self.bearer,
+             route=f"/v1/operations/{operation['operationId']}/result")
+        _, pre_observation = call(str(self.socket_path), bearer=self.bearer, owner="principal-a", client="client-a",
+                                  route="/admin/api/v1/assignments/job-1")
+        self.assertIsNone(pre_observation["tasks"][0]["providerStatus"])
+        self.assertIsNone(pre_observation["tasks"][0]["releasedAt"])
+        with self.registry.connection(write=True) as db:
+            db.execute("UPDATE operations SET due_at=0 WHERE kind='observe_session' AND state='queued'")
+        _, observation = call(str(self.socket_path), method="POST", body={"workerId": "node-1"}, bearer=self.bearer,
+                             route="/v1/operations/claim")
+        call(str(self.socket_path), method="POST", body={"workerId": "node-1", "outcome": "accepted", "result": {
+            "status": "complete", "assistantText": "DONE verified", "assistantAt": time.time() + 1, "sessionId": "session-a"}},
+            bearer=self.bearer, route=f"/v1/operations/{observation['operationId']}/result")
+        status, task_status = call(str(self.socket_path), bearer=self.bearer, owner="principal-a", client="client-a",
+                                   route="/admin/api/v1/assignments/job-1")
+        self.assertEqual(status, 200)
+        task = task_status["tasks"][0]
+        self.assertGreater(task["dispatchAt"], 0)
+        self.assertGreater(task["releasedAt"], 0)
+        self.assertEqual(task["providerStatus"], "complete")
 
     def test_auth_pipe_reads_only_a_bounded_bearer(self):
         read_fd, write_fd = os.pipe()

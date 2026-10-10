@@ -207,6 +207,7 @@ class JobRegistry:
                   state TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,
                   selected_account TEXT, attempt_id TEXT, provider_task_id TEXT, session_id TEXT,
                   released_at REAL, dispatch_at REAL, poll_count INTEGER NOT NULL DEFAULT 0, reported_model TEXT,
+                  provider_status TEXT,
                   PRIMARY KEY(assignment,task_id));
                 CREATE TABLE IF NOT EXISTS operations(
                   id TEXT PRIMARY KEY, assignment TEXT NOT NULL, task_id TEXT NOT NULL,
@@ -258,7 +259,7 @@ class JobRegistry:
     def _upgrade_schema(db):
         additions = {
             "assignments": {"owner_principal": "TEXT", "client_id": "TEXT"},
-            "job_tasks": {"released_at": "REAL", "dispatch_at": "REAL", "poll_count": "INTEGER NOT NULL DEFAULT 0", "reported_model": "TEXT"},
+            "job_tasks": {"released_at": "REAL", "dispatch_at": "REAL", "poll_count": "INTEGER NOT NULL DEFAULT 0", "reported_model": "TEXT", "provider_status": "TEXT"},
             "bridge_control": {"max_workers": "INTEGER NOT NULL DEFAULT 3"},
         }
         for table, columns in additions.items():
@@ -423,10 +424,19 @@ class JobRegistry:
         return {"assignmentId": row["id"], "projectId": row["project"], "state": row["state"],
                 "revision": row["revision"], "taskCount": len(json.loads(row["body"])["tasks"])}
 
+    @staticmethod
+    def _owner_matches(row, owner_principal_id, client_id):
+        # No filters is reserved for direct local-admin access. Once either
+        # trusted dimension is supplied, both stored dimensions must match,
+        # including NULL; NULL is never a wildcard for an OAuth caller.
+        if owner_principal_id is None and client_id is None:
+            return True
+        return row["owner_principal"] == owner_principal_id and row["client_id"] == client_id
+
     def get_assignment(self, assignment_id, owner_principal_id=None, client_id=None):
         with self.connection() as db:
             row = db.execute("SELECT * FROM assignments WHERE id=?", (assignment_id,)).fetchone()
-            if not row or (row["owner_principal"] and row["owner_principal"] != owner_principal_id) or (row["client_id"] and row["client_id"] != client_id):
+            if not row or not self._owner_matches(row, owner_principal_id, client_id):
                 return None
             tasks = []
             for task in db.execute("SELECT * FROM job_tasks WHERE assignment=? ORDER BY rowid", (assignment_id,)):
@@ -434,8 +444,9 @@ class JobRegistry:
                 tasks.append({"taskId": task["task_id"], "state": task["state"], "dependsOn": spec["dependsOn"],
                               "attempt": task["attempt_id"], "generation": task["generation"],
                               "selectedAccountId": task["selected_account"], "providerTaskId": task["provider_task_id"],
-                              "sessionId": task["session_id"], "modelRequested": "unknown/unsupported",
-                              "modelReported": None, "providerStatus": None, "quota": "unknown", "capacity": "unknown"})
+                              "sessionId": task["session_id"], "dispatchAt": task["dispatch_at"], "releasedAt": task["released_at"],
+                              "modelRequested": "unknown/unsupported", "modelReported": task["reported_model"],
+                              "providerStatus": task["provider_status"], "quota": "unknown", "capacity": "unknown"})
             return {"schemaVersion": 1, **self._receipt(row), "eligibleAccountIds": json.loads(row["eligible"]), "tasks": tasks}
 
     def list_assignments(self, project, *, offset=0, limit=50, owner_principal_id=None, client_id=None):
@@ -443,12 +454,9 @@ class JobRegistry:
             raise ValueError("Invalid assignment page")
         with self.connection() as db:
             clauses, args = [], [project]
-            if owner_principal_id:
-                clauses.append("(owner_principal IS NULL OR owner_principal=?)")
-                args.append(owner_principal_id)
-            if client_id:
-                clauses.append("(client_id IS NULL OR client_id=?)")
-                args.append(client_id)
+            if owner_principal_id is not None or client_id is not None:
+                clauses.append("owner_principal IS ? AND client_id IS ?")
+                args.extend((owner_principal_id, client_id))
             where = " AND " + " AND ".join(clauses) if clauses else ""
             total = db.execute("SELECT COUNT(*) FROM assignments WHERE project=?" + where, args).fetchone()[0]
             rows = db.execute("SELECT * FROM assignments WHERE project=?" + where + " ORDER BY created_at,id LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
@@ -733,9 +741,10 @@ class JobRegistry:
                     db.execute("UPDATE job_tasks SET released_at=? WHERE assignment=? AND task_id=? AND generation=?",
                                (when, op["assignment"], op["task_id"], op["generation"]))
                     db.execute("UPDATE attempts SET released_at=? WHERE id=? AND released_at IS NULL", (when, op["attempt_id"]))
-                    remaining = db.execute("SELECT COUNT(*) FROM job_tasks WHERE assignment=? AND state!='complete'", (op["assignment"],)).fetchone()[0]
-                    if remaining == 0:
-                        db.execute("UPDATE assignments SET state='complete',revision=revision+1 WHERE id=?", (op["assignment"],))
+                observed_status = result.get("status")
+                if isinstance(observed_status, str):
+                    db.execute("UPDATE job_tasks SET provider_status=? WHERE assignment=? AND task_id=? AND generation=?",
+                               (observed_status, op["assignment"], op["task_id"], op["generation"]))
             else:
                 state = "running" if op["kind"] == "launch_task" else "starting"
                 spec = json.loads(task["body"])
@@ -759,6 +768,14 @@ class JobRegistry:
                                (result["sessionId"], op["assignment"], op["task_id"], op["generation"]))
             db.execute("UPDATE job_tasks SET state=? WHERE assignment=? AND task_id=? AND generation=?",
                        (state, op["assignment"], op["task_id"], op["generation"]))
+            if state == "complete":
+                remaining = db.execute("SELECT COUNT(*) FROM job_tasks WHERE assignment=? AND state!='complete'",
+                                       (op["assignment"],)).fetchone()[0]
+                if remaining == 0:
+                    changed = db.execute("UPDATE assignments SET state='complete',revision=revision+1 WHERE id=? AND state='queued' AND approved=1",
+                                         (op["assignment"],)).rowcount
+                    if changed:
+                        self._event(db, op["assignment"], "assignment_complete", {"state": "complete"}, when)
             if state in {"ambiguous", "blocked"}:
                 db.execute("UPDATE assignments SET state='held',revision=revision+1 WHERE id=?", (op["assignment"],))
             self._event(db, op["assignment"], "operation_" + state, {"state": state, "taskId": op["task_id"],
@@ -805,7 +822,7 @@ class JobRegistry:
             row = db.execute("SELECT owner_principal,client_id FROM assignments WHERE id=?", (assignment_id,)).fetchone()
             if not row:
                 raise KeyError("Assignment not found")
-            if (row["owner_principal"] and row["owner_principal"] != owner_principal_id) or (row["client_id"] and row["client_id"] != client_id):
+            if not self._owner_matches(row, owner_principal_id, client_id):
                 raise KeyError("Assignment not found")
             results = db.execute("SELECT task_id,generation,text,assistant_at,reported_model,created_at FROM job_results WHERE assignment=? ORDER BY task_id,generation", (assignment_id,)).fetchall()
             return {"assignmentId": assignment_id, "results": [dict(item) for item in results]}
@@ -814,7 +831,7 @@ class JobRegistry:
         when = time.time() if now is None else now
         with self.connection(write=True) as db:
             row = db.execute("SELECT * FROM assignments WHERE id=?", (assignment_id,)).fetchone()
-            if not row or (row["owner_principal"] and row["owner_principal"] != owner_principal_id) or (row["client_id"] and row["client_id"] != client_id):
+            if not row or not self._owner_matches(row, owner_principal_id, client_id):
                 raise KeyError("Assignment not found")
             if row["revision"] != expected_revision:
                 raise RuntimeError("Stale assignment revision")

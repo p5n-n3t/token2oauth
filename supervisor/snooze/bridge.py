@@ -119,6 +119,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             body["clientId"] = client
         return body
 
+    def _owner_context(self, *, required=False):
+        principal = self.headers.get("X-Owner-Principal") or None
+        client = self.headers.get("X-Client-Id") or None
+        if required and principal is None and client is None:
+            raise PermissionError("owner_context_required")
+        return principal, client
+
     def _dispatch(self):
         if not self._authorized():
             self._reply(401, {"error": "unauthorized"})
@@ -143,9 +150,10 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("projectId is required")
                 offset = int(query.get("offset", ["0"])[0])
                 limit = int(query.get("limit", ["50"])[0])
+                owner_principal_id, client_id = self._owner_context()
                 self._reply(200, registry.list_assignments(project, offset=offset, limit=limit,
-                                                           owner_principal_id=self.headers.get("X-Owner-Principal"),
-                                                           client_id=self.headers.get("X-Client-Id")))
+                                                           owner_principal_id=owner_principal_id,
+                                                           client_id=client_id))
                 return
             match = re.fullmatch(r"/admin/api/v1/assignments/([^/]+)(?:/approve)?", route)
             if self.command == "POST" and match and route.endswith("/approve"):
@@ -155,21 +163,19 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 self._reply(202, registry.approve(urllib.parse.unquote(match.group(1)), body["expectedRevision"]))
                 return
             if self.command == "GET" and match and not route.endswith("/approve"):
-                value = registry.get_assignment(urllib.parse.unquote(match.group(1)), self.headers.get("X-Owner-Principal"),
-                                                self.headers.get("X-Client-Id"))
+                value = registry.get_assignment(urllib.parse.unquote(match.group(1)), *self._owner_context())
                 self._reply(200, value) if value else self._reply(404, {"error": "not_found"})
                 return
             match = re.fullmatch(r"/v1/assignments/([^/]+)/(results|cancel)", route)
             if match and match.group(2) == "results" and self.command == "GET":
-                self._reply(200, registry.assignment_results(urllib.parse.unquote(match.group(1)), self.headers.get("X-Owner-Principal"),
-                                                             self.headers.get("X-Client-Id")))
+                self._reply(200, registry.assignment_results(urllib.parse.unquote(match.group(1)), *self._owner_context(required=True)))
                 return
             if match and match.group(2) == "cancel" and self.command == "POST":
                 body = self._body()
                 if set(body) != {"expectedRevision"} or type(body["expectedRevision"]) is not int:
                     raise ValueError("expectedRevision is required")
                 self._reply(202, registry.cancel_assignment(urllib.parse.unquote(match.group(1)), body["expectedRevision"],
-                                                              self.headers.get("X-Owner-Principal"), self.headers.get("X-Client-Id")))
+                                                              *self._owner_context(required=True)))
                 return
             if self.command == "GET" and route == "/admin/api/v1/events":
                 after = int(query.get("after", ["0"])[0])
@@ -199,6 +205,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             self._reply(404, {"error": "not_found"})
         except KeyError:
             self._reply(404, {"error": "not_found"})
+        except PermissionError as exc:
+            self._reply(403, {"error": str(exc)[:80]})
         except RuntimeError as exc:
             self._reply(409, {"error": str(exc)[:160]})
         except (ValueError, TypeError, OverflowError) as exc:

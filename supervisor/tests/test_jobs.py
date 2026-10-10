@@ -105,6 +105,33 @@ class JobRegistryTests(unittest.TestCase):
         self.assertEqual(nxt["kind"], "chat_session")
         self.assertEqual(nxt["input"]["sessionId"], "session-account-a")
 
+    def test_final_dependent_task_completes_parent_once_and_survives_restart(self):
+        body = assignment(tasks=[task("first"), task("second", depends=["first"])])
+        self.registry.submit(body, now=1)
+        final_result = None
+        for base in (2, 7):
+            chat = self.registry.claim_operation("worker", now=base)
+            self.assertEqual(chat["kind"], "chat_session")
+            self.registry.record_result(chat["operationId"], {"workerId": "worker", "outcome": "accepted"}, now=base + 1)
+            observe = self.registry.claim_operation("worker", now=base + 3)
+            self.assertEqual(observe["kind"], "observe_session")
+            final_result = {"workerId": "worker", "outcome": "accepted", "result": {
+                "status": "complete", "assistantText": "DONE", "assistantAt": base + 2,
+                "sessionId": "session-account-a"}}
+            self.registry.record_result(observe["operationId"], final_result, now=base + 4)
+        snapshot = self.registry.get_assignment("job-1")
+        self.assertEqual((snapshot["state"], snapshot["revision"]), ("complete", 2))
+        self.assertTrue(all(task_row["dispatchAt"] is not None and task_row["releasedAt"] is not None for task_row in snapshot["tasks"]))
+        self.assertTrue(all(task_row["providerStatus"] == "complete" for task_row in snapshot["tasks"]))
+        reopened = JobRegistry(self.db)
+        self.assertEqual((reopened.get_assignment("job-1")["state"], reopened.get_assignment("job-1")["revision"]), ("complete", 2))
+        self.assertIn("assignment_complete", [event["kind"] for event in self.registry.events()["events"]])
+        # A duplicate receipt is idempotent and cannot bump the parent revision.
+        with self.registry.connection() as db:
+            last_operation = db.execute("SELECT id FROM operations WHERE kind='observe_session' AND state='accepted' ORDER BY created_at DESC LIMIT 1").fetchone()["id"]
+        self.registry.record_result(last_operation, final_result, now=20)
+        self.assertEqual(self.registry.get_assignment("job-1")["revision"], 2)
+
     def test_scope_conflict_across_jobs_blocks_second_until_release(self):
         self.registry.submit(assignment(), now=1)
         first = self.registry.claim_operation("node-1", now=2)
