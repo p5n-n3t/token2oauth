@@ -175,17 +175,24 @@ class TaskRepository:
         return [self.attempt(id) for id in ids]
 
     @contextmanager
-    def dispatch_fence(self, attempt_id, policy_revision, *, override_pause=False):
+    def dispatch_fence(self, attempt_id, policy_revision, *, expected_state, expected_generation, override_pause=False):
         """Serialize the last local ownership/policy check with provider I/O.
 
         The write transaction remains held while the caller performs exactly one
-        provider mutation. A persisted pause/stop therefore cannot be acknowledged
-        between this check and that mutation.
+        provider mutation. A persisted pause/stop or phase change therefore cannot
+        be acknowledged between this check and that mutation.
         """
         with self.connection(True) as c:
             row = c.execute('SELECT * FROM attempts WHERE id=? AND released_at IS NULL', (attempt_id,)).fetchone()
             if not row:
                 raise DispatchFenceError('Attempt ownership is no longer active')
+            if row['state'] != expected_state:
+                raise DispatchFenceError('Attempt phase changed before provider I/O')
+            if row['generation'] != expected_generation:
+                raise DispatchFenceError('Attempt generation changed before provider I/O')
+            current_generation = c.execute('SELECT MAX(generation) FROM attempts WHERE task=?', (row['task'],)).fetchone()[0]
+            if current_generation != expected_generation:
+                raise DispatchFenceError('Attempt is no longer the current generation')
             project = c.execute('SELECT executor FROM projects WHERE id=?', (row['project'],)).fetchone()
             if not project or project['executor'] != 'snooze':
                 raise DispatchFenceError('Snooze no longer owns dispatch for this project')
@@ -249,10 +256,14 @@ class TaskRepository:
             if not row: raise ValueError('No active attempt')
             task=c.execute('SELECT revision FROM tasks WHERE id=?',(row['task'],)).fetchone()
             if expected_revision is not None and task['revision']!=expected_revision:raise ValueError('Stale revision')
+            # A provider receipt may arrive after a cancellation request was
+            # persisted. Keep cancellation authoritative while still recording
+            # a late session receipt so the coordinator can observe/cancel it.
+            effective_state = row['state'] if row['state'] in ('cancel_pending', 'cancelled') and state != 'cancelled' else state
             merged = json.loads(row['data']); merged.update(data or {})
-            c.execute('UPDATE attempts SET state=?,session=COALESCE(?,session),data=? WHERE id=?', (state, session, json.dumps(merged), id))
-            c.execute('UPDATE tasks SET state=?,updated_at=?,revision=revision+1 WHERE id=?', (state, when, row['task']))
-            self.event(c, row['project'], 'attempt_' + state, merged, row['task'], id, when)
+            c.execute('UPDATE attempts SET state=?,session=COALESCE(?,session),data=? WHERE id=?', (effective_state, session, json.dumps(merged), id))
+            c.execute('UPDATE tasks SET state=?,updated_at=?,revision=revision+1 WHERE id=?', (effective_state, when, row['task']))
+            self.event(c, row['project'], 'attempt_' + effective_state, merged, row['task'], id, when)
 
     def release(self, attempt_id, evidence):
         if not any(evidence.get(k) is True for k in ('confirmed_inactive', 'cancelled', 'validated', 'manual_ownership_resolution')): return False
