@@ -87,3 +87,12 @@ Verified checks at this point: 163 Node tests after MCP scope integration; 178 P
 Live adapter testing exposed legacy generic-bearer-mcp account metadata and newest-transcript truncation problems. Legacy compatibility is repaired without mutating the live registry; recent-transcript projection is being integrated. A send receipt alone is not reported as completed execution.
 
 Next: finish runtime/worker/Python contract alignment and scoped client isolation; prove one-submit real multi-account fan-out, durable completion and restart; mount and inspect authenticated UI; finish recovery and release packaging validation. Provider balances/slots remain unknown, and 24/35 real concurrency remains unverified.
+
+## 16:35 UTC integration and usage checkpoint
+
+- Claude Code authorization, gateway calls/reconnection and headless session resume remain verified; the installed gateway has not been upgraded.
+- Imported authenticated supervisor UI, responsive layout, numeric-second worker receipts, complete bounded outputs, exclusive durable session reservations and package asset fixes into the integration branch.
+- Combined Python suite: 211 passed before the latest reservation patch; reservation-focused suite: 18 passed after review restored the account occupancy guard. Latest full Node run: 182 passed / 2 failed (Python socket creation permissions race and fixture timeout); runtime alignment worker owns their repair. This checkpoint does not claim a green combined build.
+- Browser preview at 390×844: page width 390 before and after provider expansion. Saved-preflight preview only, not proof of operational supervisor wiring. Evidence: `output/playwright/supervisor-mobile-fixed.png`.
+- User requested remaining quota and attribution by account/slot/model. Official documentation describes shared workspace credits. Authenticated read-only status of account 3 exposes model, prompt count, unit-unknown session budget fields and reported session USD cost; sanitized evidence: `docs/evidence/2026-10-10-session-usage.json`. Remaining account credits remain unknown. Never infer a credit balance from the session budget or double-count a shared workspace pool.
+- Next: merge/test R30 runtime alignment and R34 harness artifacts, then execute one controlled marker-only multi-account job. No 24/35-worker acceptance, full model catalog, maximum slot limit, live remaining balance or release deployment is claimed.

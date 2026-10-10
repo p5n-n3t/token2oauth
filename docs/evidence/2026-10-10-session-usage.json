@@ -1,0 +1,18 @@
+{
+  "verifiedAt": "2026-10-10T16:34:39.789Z",
+  "accountId": "V0iI9ZYDWl6j",
+  "sessionId": "EqFCnELEALprgv_1RierY",
+  "source": "authenticated native LightSprint MCP session status",
+  "fields": {
+    "model": "gpt-6-luna",
+    "provider": "codex",
+    "sessionStatus": "idle",
+    "promptCount": 2,
+    "budgetUsed": 0,
+    "maxBudget": 500,
+    "aiGatewaySessionCostUsd": 0.107202,
+    "sandboxTier": "standard",
+    "fundingSource": "lightsprint_credits"
+  },
+  "remainingAccountCredits": "unknown"
+}
