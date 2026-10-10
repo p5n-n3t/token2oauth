@@ -1,0 +1,281 @@
+{
+  "observedAt": "2026-10-10T17:27:53.205Z",
+  "state": "ready",
+  "providers": [
+    {
+      "id": "lightsprint",
+      "label": "LightSprint",
+      "status": "available",
+      "accounts": [
+        {
+          "id": "V0iI9ZYDWl6j",
+          "label": "Lightsprint - 3 - jqleq",
+          "status": "healthy",
+          "workspaces": [
+            {
+              "id": "ZAPZKLoXANXz__Z1XvPy4",
+              "workers": [
+                {
+                  "id": "EqFCnELEALprgv_1RierY",
+                  "workspace": "ZAPZKLoXANXz__Z1XvPy4",
+                  "status": "eligible",
+                  "usage": {
+                    "reportedSessionCostUsd": 0.124633,
+                    "reportedCostDeltaUsd": 0.001314,
+                    "promptCountDelta": 1,
+                    "budgetUsed": 0,
+                    "maxBudget": 500,
+                    "fundingSource": "lightsprint_credits",
+                    "sandboxTier": "standard",
+                    "observedAt": 1791652719.3360407,
+                    "source": "lightsprint-session-status",
+                    "provisional": true,
+                    "budgetUnit": "unknown"
+                  },
+                  "model": "gpt-6-luna",
+                  "taskId": "r47-1791652705154-244019faaf:task-1"
+                }
+              ]
+            }
+          ],
+          "usage": {
+            "totalTaskGenerations": 1,
+            "coveredTaskGenerations": 1,
+            "reportedCostDeltaUsd": 0.001314,
+            "observedAt": 1791652719.3360407,
+            "source": "lightsprint-session-status",
+            "provisional": true
+          }
+        },
+        {
+          "id": "YFi2EwrtdFDB",
+          "label": "Lightsprint AI - 5 - elleparker",
+          "status": "healthy",
+          "workspaces": [
+            {
+              "id": "de6CZvtpKiBdScX1qarB1",
+              "workers": [
+                {
+                  "id": "Vkw6LlIw6DrgcHV81Ci4T",
+                  "workspace": "de6CZvtpKiBdScX1qarB1",
+                  "status": "eligible",
+                  "usage": {
+                    "reportedSessionCostUsd": 0.388239,
+                    "reportedCostDeltaUsd": 0.000838,
+                    "promptCountDelta": 1,
+                    "budgetUsed": 0,
+                    "maxBudget": 500,
+                    "fundingSource": "lightsprint_credits",
+                    "sandboxTier": "standard",
+                    "observedAt": 1791652714.5047746,
+                    "source": "lightsprint-session-status",
+                    "provisional": true,
+                    "budgetUnit": "unknown"
+                  },
+                  "model": "gpt-6-luna",
+                  "taskId": "r47-1791652705154-244019faaf:task-2"
+                }
+              ]
+            }
+          ],
+          "usage": {
+            "totalTaskGenerations": 1,
+            "coveredTaskGenerations": 1,
+            "reportedCostDeltaUsd": 0.000838,
+            "observedAt": 1791652714.5047746,
+            "source": "lightsprint-session-status",
+            "provisional": true
+          }
+        }
+      ]
+    }
+  ],
+  "jobs": [
+    {
+      "id": "r47-1791652705154-244019faaf",
+      "label": "2 tasks",
+      "status": "complete",
+      "provider": "LightSprint",
+      "account": "V0iI9ZYDWl6j, YFi2EwrtdFDB",
+      "dependencies": []
+    }
+  ],
+  "tasks": [
+    {
+      "id": "r47-1791652705154-244019faaf:task-1",
+      "label": "task-1",
+      "status": "complete",
+      "workspace": "ZAPZKLoXANXz__Z1XvPy4",
+      "worker": "EqFCnELEALprgv_1RierY",
+      "accountId": "V0iI9ZYDWl6j",
+      "reportedModel": "gpt-6-luna",
+      "generation": 1,
+      "usage": {
+        "reportedSessionCostUsd": 0.124633,
+        "reportedCostDeltaUsd": 0.001314,
+        "promptCountDelta": 1,
+        "budgetUsed": 0,
+        "maxBudget": 500,
+        "fundingSource": "lightsprint_credits",
+        "sandboxTier": "standard",
+        "observedAt": 1791652719.3360407,
+        "source": "lightsprint-session-status",
+        "provisional": true,
+        "budgetUnit": "unknown"
+      }
+    },
+    {
+      "id": "r47-1791652705154-244019faaf:task-2",
+      "label": "task-2",
+      "status": "complete",
+      "workspace": "de6CZvtpKiBdScX1qarB1",
+      "worker": "Vkw6LlIw6DrgcHV81Ci4T",
+      "accountId": "YFi2EwrtdFDB",
+      "reportedModel": "gpt-6-luna",
+      "generation": 1,
+      "usage": {
+        "reportedSessionCostUsd": 0.388239,
+        "reportedCostDeltaUsd": 0.000838,
+        "promptCountDelta": 1,
+        "budgetUsed": 0,
+        "maxBudget": 500,
+        "fundingSource": "lightsprint_credits",
+        "sandboxTier": "standard",
+        "observedAt": 1791652714.5047746,
+        "source": "lightsprint-session-status",
+        "provisional": true,
+        "budgetUnit": "unknown"
+      }
+    }
+  ],
+  "workers": [
+    {
+      "id": "EqFCnELEALprgv_1RierY",
+      "workspace": "ZAPZKLoXANXz__Z1XvPy4",
+      "status": "eligible",
+      "usage": {
+        "reportedSessionCostUsd": 0.124633,
+        "reportedCostDeltaUsd": 0.001314,
+        "promptCountDelta": 1,
+        "budgetUsed": 0,
+        "maxBudget": 500,
+        "fundingSource": "lightsprint_credits",
+        "sandboxTier": "standard",
+        "observedAt": 1791652719.3360407,
+        "source": "lightsprint-session-status",
+        "provisional": true,
+        "budgetUnit": "unknown"
+      },
+      "model": "gpt-6-luna",
+      "taskId": "r47-1791652705154-244019faaf:task-1"
+    },
+    {
+      "id": "Vkw6LlIw6DrgcHV81Ci4T",
+      "workspace": "de6CZvtpKiBdScX1qarB1",
+      "status": "eligible",
+      "usage": {
+        "reportedSessionCostUsd": 0.388239,
+        "reportedCostDeltaUsd": 0.000838,
+        "promptCountDelta": 1,
+        "budgetUsed": 0,
+        "maxBudget": 500,
+        "fundingSource": "lightsprint_credits",
+        "sandboxTier": "standard",
+        "observedAt": 1791652714.5047746,
+        "source": "lightsprint-session-status",
+        "provisional": true,
+        "budgetUnit": "unknown"
+      },
+      "model": "gpt-6-luna",
+      "taskId": "r47-1791652705154-244019faaf:task-2"
+    }
+  ],
+  "events": [
+    {
+      "id": "1",
+      "at": 1791652705.5419166,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "assignment_queued"
+    },
+    {
+      "id": "2",
+      "at": 1791652706.1624496,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_queued"
+    },
+    {
+      "id": "3",
+      "at": 1791652706.1813564,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_queued"
+    },
+    {
+      "id": "4",
+      "at": 1791652708.6816998,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_awaiting_output"
+    },
+    {
+      "id": "5",
+      "at": 1791652709.1615078,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_awaiting_output"
+    },
+    {
+      "id": "6",
+      "at": 1791652710.8448055,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_awaiting_output"
+    },
+    {
+      "id": "7",
+      "at": 1791652711.1743407,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_awaiting_output"
+    },
+    {
+      "id": "8",
+      "at": 1791652713.6432078,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_awaiting_output"
+    },
+    {
+      "id": "9",
+      "at": 1791652714.5047746,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_complete"
+    },
+    {
+      "id": "10",
+      "at": 1791652719.3360407,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "assignment_complete"
+    },
+    {
+      "id": "11",
+      "at": 1791652719.3360407,
+      "severity": "info",
+      "source": "supervisor",
+      "message": "operation_complete"
+    }
+  ],
+  "supervisor": {
+    "status": "running",
+    "observedAt": "2026-10-10T17:27:53.205Z"
+  },
+  "orchestrator": {
+    "status": "unknown",
+    "detail": "Originating client heartbeat is not registered.",
+    "observedAt": "2026-10-10T17:27:53.205Z"
+  }
+}

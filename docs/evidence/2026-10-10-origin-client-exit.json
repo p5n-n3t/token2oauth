@@ -1,0 +1,111 @@
+{
+  "assignmentId": "r47-1791652705154-244019faaf",
+  "projectId": "token2oauth-verification",
+  "submittedAt": "2026-10-10T17:18:25.154Z",
+  "originClientExitAt": "2026-10-10T17:18:25.572Z",
+  "submission": "accepted",
+  "state": "complete",
+  "tasks": [
+    {
+      "taskId": "task-1",
+      "state": "complete",
+      "selectedAccountId": "V0iI9ZYDWl6j",
+      "startedAt": "2026-10-10T17:18:26.162Z",
+      "finishedAt": null,
+      "expectedMarkerMatched": true,
+      "expectedMarker": "r47-1791652705154-244019faaf-task-1-OK",
+      "resultAt": "2026-10-10T17:18:29.326Z"
+    },
+    {
+      "taskId": "task-2",
+      "state": "complete",
+      "selectedAccountId": "YFi2EwrtdFDB",
+      "startedAt": "2026-10-10T17:18:26.181Z",
+      "finishedAt": null,
+      "expectedMarkerMatched": true,
+      "expectedMarker": "r47-1791652705154-244019faaf-task-2-OK",
+      "resultAt": "2026-10-10T17:18:30.052Z"
+    }
+  ],
+  "providerSessions": [
+    {
+      "accountId": "V0iI9ZYDWl6j",
+      "sessionId": "EqFCnELEALprgv_1RierY",
+      "baselineAt": "2026-10-10T17:18:24.227Z",
+      "baseline": {
+        "status": "idle",
+        "promptCount": 3,
+        "budgetUsed": 0,
+        "maxBudget": 500,
+        "aiGatewaySessionCostUsd": 0.123319
+      },
+      "finalAt": "2026-10-10T17:18:40.365Z",
+      "final": {
+        "status": "idle",
+        "promptCount": 4,
+        "budgetUsed": 0,
+        "maxBudget": 500,
+        "aiGatewaySessionCostUsd": 0.124633
+      },
+      "promptCountDelta": 1
+    },
+    {
+      "accountId": "YFi2EwrtdFDB",
+      "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+      "baselineAt": "2026-10-10T17:18:25.100Z",
+      "baseline": {
+        "status": "idle",
+        "promptCount": 6,
+        "budgetUsed": 0,
+        "maxBudget": 500,
+        "aiGatewaySessionCostUsd": 0.387401
+      },
+      "finalAt": "2026-10-10T17:18:40.667Z",
+      "final": {
+        "status": "idle",
+        "promptCount": 7,
+        "budgetUsed": 0,
+        "maxBudget": 500,
+        "aiGatewaySessionCostUsd": 0.388239
+      },
+      "promptCountDelta": 1
+    }
+  ],
+  "gatewayRestart": {
+    "status": "blocked",
+    "stopAt": null,
+    "startAt": null,
+    "reason": "The bounded observation did not confirm two simultaneously running provider sessions with one accepted prompt each; gateway restart was not attempted."
+  },
+  "runningIntervals": {
+    "simultaneousRunningSamples": [],
+    "taskIntervals": [
+      {
+        "taskId": "task-1",
+        "state": "complete",
+        "startedAt": "2026-10-10T17:18:26.162Z",
+        "finishedAt": null
+      },
+      {
+        "taskId": "task-2",
+        "state": "complete",
+        "startedAt": "2026-10-10T17:18:26.181Z",
+        "finishedAt": null
+      }
+    ],
+    "overlapObserved": false
+  },
+  "blockers": [],
+  "eligibleAccountIds": [
+    "V0iI9ZYDWl6j",
+    "YFi2EwrtdFDB"
+  ],
+  "distinctSelectedAccounts": 2,
+  "observedAt": "2026-10-10T17:18:40.702Z",
+  "cleanup": "local gateway and bridge child closed; no job/session control was sent; ambiguous submissions are not retried",
+  "limitations": [
+    "Origin MCP client exited; gateway/supervisor parent remained alive until completion.",
+    "This is not proof of full orchestrator parent process termination, gateway restart, or simultaneous provider running overlap.",
+    "Provider USD fields are provisional; they are not remaining credits or invoice debits."
+  ]
+}

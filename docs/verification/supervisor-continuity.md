@@ -30,3 +30,11 @@ If a submission is ambiguous, times out, fails a marker, lacks prompt-count evid
 ## Validation record
 
 Harness source was checked with `node --check`; no harness run, paid inference, provider call, build, or test suite was executed while preparing this operator artifact. The restart path is explicitly blocked by the current process architecture and no restart success is claimed.
+
+## Operator verification — 2026-10-10
+
+The operator ran the harness against two registered real accounts. One OAuth-authenticated MCP submission was accepted at 17:18:25 UTC; its child client exited at 17:18:25.572 UTC. Both exact markers were collected afterward, each provider prompt count increased by exactly one, and the parent job became complete. Evidence is in `../evidence/2026-10-10-origin-client-exit.json`. This proves that monitoring/result collection survives the submitting client exiting while the gateway backend remains alive. It does not prove that the entire parent process can exit or that gateway restart during active execution succeeds.
+
+The same durable database was reopened after the test. The administrative projection recovered both completed tasks and their receipt-derived provider USD deltas, $0.001314 and $0.000838. `../evidence/2026-10-10-durable-usage-snapshot.json` records that projection. These are provisional reported USD increases, not invoice charges or remaining credits.
+
+The operator corrected native status parsing (`status.sessionStatus`) and observes provider running state independently from local queue states. No simultaneous provider overlap was established in this short continuity run. Gateway restart remains unverified; remote execution can survive a local restart, and a separate harness is being prepared to prove safe reconciliation without duplicate launch.

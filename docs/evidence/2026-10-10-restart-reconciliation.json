@@ -1,0 +1,429 @@
+{
+  "verified": true,
+  "observedAt": "2026-10-10T17:31:31.098Z",
+  "initialHarnessError": "Post-restart read-only operation claims were incorrectly included in the send-receipt stability gate. Original accepted chat receipts were unchanged.",
+  "initialTest": {
+    "assignmentId": "r54-1791653383544-c7bf382102",
+    "projectId": "token2oauth-verification",
+    "submittedAt": "2026-10-10T17:29:43.546Z",
+    "originClientExitAt": "2026-10-10T17:29:44.506Z",
+    "submission": "accepted",
+    "state": "queued",
+    "tasks": [
+      {
+        "taskId": "task-1",
+        "state": "awaiting_output",
+        "selectedAccountId": "V0iI9ZYDWl6j",
+        "startedAt": "2026-10-10T17:29:45.230Z",
+        "finishedAt": null,
+        "expectedMarkerMatched": false
+      },
+      {
+        "taskId": "task-2",
+        "state": "awaiting_output",
+        "selectedAccountId": "YFi2EwrtdFDB",
+        "startedAt": "2026-10-10T17:29:45.272Z",
+        "finishedAt": null,
+        "expectedMarkerMatched": false
+      }
+    ],
+    "providerSessions": [
+      {
+        "accountId": "V0iI9ZYDWl6j",
+        "sessionId": "EqFCnELEALprgv_1RierY",
+        "baselineAt": "2026-10-10T17:29:42.377Z",
+        "baseline": {
+          "status": "idle",
+          "promptCount": 4,
+          "budgetUsed": 0,
+          "maxBudget": 500,
+          "aiGatewaySessionCostUsd": 0.124633
+        },
+        "finalAt": "2026-10-10T17:29:58.691Z",
+        "final": {
+          "status": "idle",
+          "promptCount": 5,
+          "budgetUsed": 0,
+          "maxBudget": 500,
+          "aiGatewaySessionCostUsd": 0.125947
+        },
+        "promptCountDelta": 1
+      },
+      {
+        "accountId": "YFi2EwrtdFDB",
+        "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+        "baselineAt": "2026-10-10T17:29:43.433Z",
+        "baseline": {
+          "status": "idle",
+          "promptCount": 7,
+          "budgetUsed": 0,
+          "maxBudget": 500,
+          "aiGatewaySessionCostUsd": 0.388239
+        },
+        "finalAt": "2026-10-10T17:30:00.016Z",
+        "final": {
+          "status": "idle",
+          "promptCount": 8,
+          "budgetUsed": 0,
+          "maxBudget": 500,
+          "aiGatewaySessionCostUsd": 0.389078
+        },
+        "promptCountDelta": 1
+      }
+    ],
+    "gatewayRestart": {
+      "status": "incomplete",
+      "stopAt": "2026-10-10T17:29:51.454Z",
+      "startAt": "2026-10-10T17:29:54.657Z",
+      "observedAt": "2026-10-10T17:29:51.450Z",
+      "providerSessionsBeforeStop": [
+        {
+          "accountId": "V0iI9ZYDWl6j",
+          "sessionId": "EqFCnELEALprgv_1RierY",
+          "status": "running"
+        },
+        {
+          "accountId": "YFi2EwrtdFDB",
+          "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+          "status": "running"
+        }
+      ],
+      "receiptsBeforeStop": [
+        {
+          "operationId": "bab4d66be0134482b767fa5f85b87506",
+          "taskId": "task-1",
+          "accountId": "V0iI9ZYDWl6j",
+          "state": "accepted",
+          "clientMessageId": "a48c5016ece949f1b3ab9f36f692858f:1",
+          "sessionId": "EqFCnELEALprgv_1RierY"
+        },
+        {
+          "operationId": "e0a353e63a0d4ec39a7a487546139a62",
+          "taskId": "task-2",
+          "accountId": "YFi2EwrtdFDB",
+          "state": "accepted",
+          "clientMessageId": "e6481e319bf746b1a550b12d30a5f8a8:1",
+          "sessionId": "Vkw6LlIw6DrgcHV81Ci4T"
+        }
+      ],
+      "runtimeStoppedAt": "2026-10-10T17:29:51.507Z",
+      "remoteStateAfterStop": [
+        {
+          "accountId": "V0iI9ZYDWl6j",
+          "sessionId": "EqFCnELEALprgv_1RierY",
+          "status": {
+            "status": "running",
+            "promptCount": 4,
+            "budgetUsed": 0,
+            "maxBudget": 500,
+            "aiGatewaySessionCostUsd": 0.124633
+          }
+        },
+        {
+          "accountId": "YFi2EwrtdFDB",
+          "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+          "status": {
+            "status": "running",
+            "promptCount": 7,
+            "budgetUsed": 0,
+            "maxBudget": 500,
+            "aiGatewaySessionCostUsd": 0.388239
+          }
+        }
+      ],
+      "runtimeStartedAt": "2026-10-10T17:29:54.586Z",
+      "providerSessionsAfterRestart": [
+        {
+          "accountId": "V0iI9ZYDWl6j",
+          "sessionId": "EqFCnELEALprgv_1RierY",
+          "status": {
+            "status": "idle",
+            "promptCount": 5,
+            "budgetUsed": 0,
+            "maxBudget": 500,
+            "aiGatewaySessionCostUsd": 0.125947
+          }
+        },
+        {
+          "accountId": "YFi2EwrtdFDB",
+          "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+          "status": {
+            "status": "idle",
+            "promptCount": 8,
+            "budgetUsed": 0,
+            "maxBudget": 500,
+            "aiGatewaySessionCostUsd": 0.389078
+          }
+        }
+      ],
+      "receiptsAfterRestart": [
+        {
+          "operationId": "bab4d66be0134482b767fa5f85b87506",
+          "taskId": "task-1",
+          "accountId": "V0iI9ZYDWl6j",
+          "state": "accepted",
+          "clientMessageId": "a48c5016ece949f1b3ab9f36f692858f:1",
+          "sessionId": "EqFCnELEALprgv_1RierY"
+        },
+        {
+          "operationId": "e0a353e63a0d4ec39a7a487546139a62",
+          "taskId": "task-2",
+          "accountId": "YFi2EwrtdFDB",
+          "state": "accepted",
+          "clientMessageId": "e6481e319bf746b1a550b12d30a5f8a8:1",
+          "sessionId": "Vkw6LlIw6DrgcHV81Ci4T"
+        }
+      ],
+      "receiptsUnchanged": false,
+      "reason": "Restart/reconnect did not finish; retained private state is available for inspection."
+    },
+    "runningIntervals": {
+      "simultaneousRunningSamples": [],
+      "taskIntervals": [
+        {
+          "taskId": "task-1",
+          "state": "awaiting_output",
+          "startedAt": "2026-10-10T17:29:45.230Z",
+          "finishedAt": null
+        },
+        {
+          "taskId": "task-2",
+          "state": "awaiting_output",
+          "startedAt": "2026-10-10T17:29:45.272Z",
+          "finishedAt": null
+        }
+      ],
+      "overlapObserved": false
+    },
+    "blockers": [
+      "status read failed (Error)"
+    ],
+    "eligibleAccountIds": [
+      "V0iI9ZYDWl6j",
+      "YFi2EwrtdFDB"
+    ],
+    "distinctSelectedAccounts": 2,
+    "observedAt": "2026-10-10T17:30:00.054Z",
+    "cleanup": "local gateway and bridge child closed; no job/session control was sent; ambiguous submissions are not retried"
+  },
+  "status": {
+    "schemaVersion": 1,
+    "assignmentId": "r54-1791653383544-c7bf382102",
+    "projectId": "token2oauth-verification",
+    "state": "complete",
+    "revision": 2,
+    "taskCount": 2,
+    "eligibleAccountIds": [
+      "V0iI9ZYDWl6j",
+      "YFi2EwrtdFDB"
+    ],
+    "tasks": [
+      {
+        "taskId": "task-1",
+        "state": "complete",
+        "dependsOn": [],
+        "attempt": "a48c5016ece949f1b3ab9f36f692858f",
+        "generation": 1,
+        "selectedAccountId": "V0iI9ZYDWl6j",
+        "providerTaskId": null,
+        "sessionId": "EqFCnELEALprgv_1RierY",
+        "dispatchAt": 1791653385.2308035,
+        "releasedAt": 1791653399.1152298,
+        "modelRequested": "unknown/unsupported",
+        "modelReported": "gpt-6-luna",
+        "providerStatus": "idle",
+        "quota": "unknown",
+        "capacity": "unknown",
+        "usage": {
+          "budgetUsed": 0,
+          "promptCount": 5,
+          "fundingSource": "lightsprint_credits",
+          "maxBudget": 500,
+          "reportedSessionCostUsd": 0.125947,
+          "sandboxTier": "standard",
+          "reportedModel": "gpt-6-luna",
+          "observedAt": 1791653399.1152298,
+          "source": "lightsprint-session-status",
+          "provisional": true,
+          "budgetUnit": "unknown",
+          "reportedCostDeltaUsd": 0.001314,
+          "promptCountDelta": 1
+        }
+      },
+      {
+        "taskId": "task-2",
+        "state": "complete",
+        "dependsOn": [],
+        "attempt": "e6481e319bf746b1a550b12d30a5f8a8",
+        "generation": 1,
+        "selectedAccountId": "YFi2EwrtdFDB",
+        "providerTaskId": null,
+        "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+        "dispatchAt": 1791653385.272491,
+        "releasedAt": 1791653399.682268,
+        "modelRequested": "unknown/unsupported",
+        "modelReported": "gpt-6-luna",
+        "providerStatus": "idle",
+        "quota": "unknown",
+        "capacity": "unknown",
+        "usage": {
+          "budgetUsed": 0,
+          "promptCount": 8,
+          "fundingSource": "lightsprint_credits",
+          "maxBudget": 500,
+          "reportedSessionCostUsd": 0.389078,
+          "sandboxTier": "standard",
+          "reportedModel": "gpt-6-luna",
+          "observedAt": 1791653399.682268,
+          "source": "lightsprint-session-status",
+          "provisional": true,
+          "budgetUnit": "unknown",
+          "reportedCostDeltaUsd": 0.000839,
+          "promptCountDelta": 1
+        }
+      }
+    ]
+  },
+  "results": {
+    "assignmentId": "r54-1791653383544-c7bf382102",
+    "results": [
+      {
+        "taskId": "task-1",
+        "generation": 1,
+        "text": "r54-1791653383544-c7bf382102-task-1-OK",
+        "assistantAt": 1791653389.666,
+        "reportedModel": "gpt-6-luna",
+        "createdAt": 1791653399.1152298
+      },
+      {
+        "taskId": "task-2",
+        "generation": 1,
+        "text": "r54-1791653383544-c7bf382102-task-2-OK",
+        "assistantAt": 1791653390.467,
+        "reportedModel": "gpt-6-luna",
+        "createdAt": 1791653399.682268
+      }
+    ]
+  },
+  "inbox": {
+    "projectId": "token2oauth-verification",
+    "events": [
+      {
+        "id": 1,
+        "eventId": "repo:1",
+        "at": 1791653384.461487,
+        "type": "assignment_queued",
+        "assignmentId": "r54-1791653383544-c7bf382102",
+        "taskId": null,
+        "state": "queued",
+        "acknowledged": false
+      },
+      {
+        "id": 2,
+        "eventId": "repo:2",
+        "at": 1791653385.2308035,
+        "type": "operation_queued",
+        "assignmentId": "r54-1791653383544-c7bf382102",
+        "taskId": "task-1",
+        "state": "queued",
+        "acknowledged": false
+      },
+      {
+        "id": 3,
+        "eventId": "repo:3",
+        "at": 1791653385.272491,
+        "type": "operation_queued",
+        "assignmentId": "r54-1791653383544-c7bf382102",
+        "taskId": "task-2",
+        "state": "queued",
+        "acknowledged": false
+      },
+      {
+        "id": 4,
+        "eventId": "repo:4",
+        "at": 1791653389.0430279,
+        "type": "operation_awaiting_output",
+        "assignmentId": "r54-1791653383544-c7bf382102",
+        "taskId": "task-1",
+        "state": "awaiting_output",
+        "acknowledged": false
+      },
+      {
+        "id": 5,
+        "eventId": "repo:5",
+        "at": 1791653389.7696068,
+        "type": "operation_awaiting_output",
+        "assignmentId": "r54-1791653383544-c7bf382102",
+        "taskId": "task-2",
+        "state": "awaiting_output",
+        "acknowledged": false
+      },
+      {
+        "id": 6,
+        "eventId": "repo:6",
+        "at": 1791653399.1152298,
+        "type": "operation_complete",
+        "assignmentId": "r54-1791653383544-c7bf382102",
+        "taskId": "task-1",
+        "state": "complete",
+        "acknowledged": false
+      },
+      {
+        "id": 7,
+        "eventId": "repo:7",
+        "at": 1791653399.682268,
+        "type": "assignment_complete",
+        "assignmentId": "r54-1791653383544-c7bf382102",
+        "taskId": null,
+        "state": "complete",
+        "acknowledged": false
+      },
+      {
+        "id": 8,
+        "eventId": "repo:8",
+        "at": 1791653399.682268,
+        "type": "operation_complete",
+        "assignmentId": "r54-1791653383544-c7bf382102",
+        "taskId": "task-2",
+        "state": "complete",
+        "acknowledged": false
+      }
+    ],
+    "cursor": null,
+    "hasMore": false
+  },
+  "sessions": [
+    {
+      "accountId": "V0iI9ZYDWl6j",
+      "sessionId": "EqFCnELEALprgv_1RierY",
+      "classification": "accepted",
+      "promptCountDelta": 1,
+      "status": "idle"
+    },
+    {
+      "accountId": "YFi2EwrtdFDB",
+      "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+      "classification": "accepted",
+      "promptCountDelta": 1,
+      "status": "idle"
+    }
+  ],
+  "chatReceipts": [
+    {
+      "id": "bab4d66be0134482b767fa5f85b87506",
+      "task_id": "task-1",
+      "account": "V0iI9ZYDWl6j",
+      "state": "accepted"
+    },
+    {
+      "id": "e0a353e63a0d4ec39a7a487546139a62",
+      "task_id": "task-2",
+      "account": "YFi2EwrtdFDB",
+      "state": "accepted"
+    }
+  ],
+  "limitations": [
+    "Graceful gateway and supervisor runtime close/recreate; not abrupt OS process kill or machine reboot.",
+    "Registered existing sessions and gpt-6-luna only; no high-scale capacity claim."
+  ]
+}

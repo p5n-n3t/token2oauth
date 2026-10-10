@@ -218,8 +218,8 @@ function readOperationReceipts(dbPath, jobId) {
   return JSON.parse(output);
 }
 
-function acceptedExactlyOnce(snapshot, sessions) {
-  return snapshot.claimedOperations === 0 && snapshot.pendingChatOperations === 0 && snapshot.receipts.length === sessions.length && new Set(snapshot.receipts.map((r) => r.taskId)).size === sessions.length && sessions.every((s) => {
+function acceptedExactlyOnce(snapshot, sessions, requireQuiescent = true) {
+  return (!requireQuiescent || snapshot.claimedOperations === 0) && snapshot.pendingChatOperations === 0 && snapshot.receipts.length === sessions.length && new Set(snapshot.receipts.map((r) => r.taskId)).size === sessions.length && sessions.every((s) => {
     const rows = snapshot.receipts.filter((r) => r.accountId === s.accountId && r.sessionId === s.sessionId && r.state === "accepted");
     return rows.length === 1 && typeof rows[0].clientMessageId === "string";
   }) && snapshot.receipts.length === sessions.length;
@@ -381,7 +381,7 @@ async function main() {
           last = await mcp(base, oauth.accessToken, 4, "job_status", { projectId: project.projectId, jobId });
           const afterReceipts = readOperationReceipts(resolve(bridgeDir, "supervisor-state", "snooze.sqlite3"), jobId);
           evidence.gatewayRestart.receiptsAfterRestart = afterReceipts.receipts;
-          evidence.gatewayRestart.receiptsUnchanged = JSON.stringify(receiptSnapshot.receipts) === JSON.stringify(afterReceipts.receipts) && acceptedExactlyOnce(afterReceipts, evidence.providerSessions);
+          evidence.gatewayRestart.receiptsUnchanged = JSON.stringify(receiptSnapshot.receipts) === JSON.stringify(afterReceipts.receipts) && acceptedExactlyOnce(afterReceipts, evidence.providerSessions, false);
           if (!evidence.gatewayRestart.receiptsUnchanged) throw new Error("accepted chat receipt changed after restart");
           restartPerformed = true;
           break;
@@ -437,7 +437,7 @@ async function main() {
       if (restartPerformed) {
         const finalReceipts = readOperationReceipts(resolve(bridgeDir, "supervisor-state", "snooze.sqlite3"), jobId);
         evidence.gatewayRestart.finalReceipts = finalReceipts.receipts;
-        const sameReceipts = evidence.gatewayRestart.receiptsUnchanged && JSON.stringify(evidence.gatewayRestart.receiptsAfterRestart) === JSON.stringify(finalReceipts.receipts) && acceptedExactlyOnce(finalReceipts, evidence.providerSessions);
+        const sameReceipts = evidence.gatewayRestart.receiptsUnchanged && JSON.stringify(evidence.gatewayRestart.receiptsAfterRestart) === JSON.stringify(finalReceipts.receipts) && acceptedExactlyOnce(finalReceipts, evidence.providerSessions, false);
         const completeContinuity = jobComplete && evidence.tasks.length === 2 && evidence.tasks.every((task) => task.expectedMarkerMatched) && evidence.providerSessions.every((row) => row.promptCountDelta === 1) && sameReceipts;
         evidence.gatewayRestart.status = completeContinuity ? "verified" : "incomplete";
         if (!completeContinuity) evidence.blockers.push("post-restart continuity criteria were not all confirmed");

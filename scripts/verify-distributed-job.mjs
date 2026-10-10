@@ -22,7 +22,8 @@ function args(argv) {
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
     if (key === "--isolated-auth") { out.isolated_auth = true; continue; }
-    if (!["--config", "--state-dir", "--project-id", "--tasks", "--timeout-seconds"].includes(key) || !argv[i + 1] || argv[i + 1].startsWith("--")) throw new Error("Usage: verify-distributed-job.mjs --config PRIVATE_JSON --state-dir PRIVATE_STATE_DIR [--project-id ID] [--tasks 2|3] [--timeout-seconds 300] [--isolated-auth]");
+    if (key === "--retain-runtime") { out.retain_runtime = true; continue; }
+    if (!["--config", "--state-dir", "--project-id", "--tasks", "--timeout-seconds"].includes(key) || !argv[i + 1] || argv[i + 1].startsWith("--")) throw new Error("Usage: verify-distributed-job.mjs --config PRIVATE_JSON --state-dir PRIVATE_STATE_DIR [--project-id ID] [--tasks 2|3] [--timeout-seconds 300] [--isolated-auth] [--retain-runtime]");
     out[key.slice(2).replaceAll("-", "_")] = argv[++i];
   }
   if (!out.config || !out.state_dir) throw new Error("Both --config and --state-dir are required");
@@ -306,7 +307,7 @@ async function main() {
     }
     if (gateway?.listening) await closeServer(gateway);
     if (runtime) await runtime.close().catch(() => undefined);
-    const retainRuntime = submissionAttempted && (evidence.state !== "complete" || evidence.tasks.some((task) => !task.expectedMarkerMatched));
+    const retainRuntime = Boolean(options.retain_runtime) || submissionAttempted && (evidence.state !== "complete" || evidence.tasks.some((task) => !task.expectedMarkerMatched));
     if (isolatedRuntimeDir && !retainRuntime) await rm(isolatedRuntimeDir, { recursive: true, force: true }).catch(() => undefined);
     if (isolatedAuthDir) await rm(isolatedAuthDir, { recursive: true, force: true }).catch(() => undefined);
     process.stdout.write(`${JSON.stringify({ ...evidence, observedAt: new Date().toISOString(), retainedRuntimeDir: retainRuntime ? isolatedRuntimeDir : null, cleanup: "local gateway and bridge child closed; unfinished job state retained when necessary; temporary OAuth records removed; no remote session control sent" }, null, 2)}\n`);

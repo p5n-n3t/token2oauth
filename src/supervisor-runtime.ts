@@ -410,7 +410,7 @@ export class SupervisorRuntime implements SupervisorBackend {
         message: typeof event.kind === "string" ? event.kind.slice(0, 120) : "event" }));
     const snapshot: SupervisorSnapshot = { observedAt, state: "ready", providers, jobs, tasks, workers, events,
       supervisor: { status: this.bridge.status().state, observedAt },
-      orchestrator: { status: this.started && !this.closed ? "running" : "stopped", observedAt } };
+      orchestrator: { status: "unknown", detail: "Originating client heartbeat is not registered.", observedAt } };
     return boundedJson(snapshot);
   }
   async controlAdmin(): Promise<unknown> { throw new Error("project-scoped supervisor controls are unavailable"); }

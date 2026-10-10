@@ -185,3 +185,9 @@ test("malformed and secret-bearing usage never becomes fabricated zero or active
   assert.match(html, /&lt;img src=x&gt;/);
   assert.match(html, /\[REDACTED\]/);
 });
+
+test("Python epoch-second event timestamps render the actual observation date", () => {
+  const html = renderSupervisorDashboard({ events: [{ id: "1", at: 1791652719.336, severity: "info", message: "operation_complete" }] });
+  assert.match(html, /2026-10-10T17:18:39\.336Z/);
+  assert.doesNotMatch(html, /1970-01-/);
+});

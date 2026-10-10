@@ -190,8 +190,13 @@ function evidenceOverlap(samples, rows) {
   return { simultaneousRunningSamples: simultaneous, taskIntervals: intervals, overlapObserved: simultaneous.length > 0 };
 }
 
-function statusSummary(value) {
-  return { status: typeof value.status === "string" ? value.status : typeof value.state === "string" ? value.state : "unknown",
+function providerStatus(value) {
+  const row = value?.status && typeof value.status === "object" ? value.status : value;
+  return { ...row, status: typeof row?.sessionStatus === "string" ? row.sessionStatus : typeof row?.status === "string" ? row.status : typeof row?.state === "string" ? row.state : "unknown" };
+}
+function statusSummary(raw) {
+  const value = providerStatus(raw);
+  return { status: value.status,
     promptCount: value.promptCount, budgetUsed: typeof value.budgetUsed === "number" ? value.budgetUsed : null,
     maxBudget: typeof value.maxBudget === "number" ? value.maxBudget : null,
     aiGatewaySessionCostUsd: typeof value.aiGatewaySessionCostUsd === "number" ? value.aiGatewaySessionCostUsd : null };
@@ -261,8 +266,8 @@ async function main() {
       var adapters = selectedAccounts.map((account) => new LightSprintJobsAdapter(store, account.id));
       for (let index = 0; index < adapters.length; index++) {
         const result = await adapters[index].sessionStatus(selectedSessions[index].sessionId);
-        if (result.classification !== "accepted" || !Number.isFinite(result.value?.promptCount)) throw new Error("provider prompt-count baseline unavailable; refusing submission");
-        if (/running|working|busy/i.test(String(result.value.status || result.value.state || ""))) throw new Error("selected provider session already active; refusing to interfere");
+        if (result.classification !== "accepted" || !Number.isFinite(providerStatus(result.value)?.promptCount)) throw new Error("provider prompt-count baseline unavailable; refusing submission");
+        if (/running|working|busy/i.test(String(providerStatus(result.value).status))) throw new Error("selected provider session already active; refusing to interfere");
         evidence.providerSessions.push({ accountId: selectedAccounts[index].id, sessionId: selectedSessions[index].sessionId, baselineAt: new Date().toISOString(), baseline: statusSummary(result.value), finalAt: null, final: null });
       }
     } else {
@@ -310,19 +315,19 @@ async function main() {
       try {
         last = await mcp(base, oauth.accessToken, 4, "job_status", { projectId: project.projectId, jobId });
         const rows = parseTaskRows(last);
-        const running = rows.filter((row) => String(row.state).toLowerCase() === "running");
+        const running = rows.filter((row) => ["running", "awaiting_output", "starting"].includes(String(row.state).toLowerCase()));
         const runningAccounts = new Set(running.map((row) => row.selectedAccountId).filter(Boolean));
         const actualRunningSessions = [];
         for (let index = 0; index < selectedSessions.length; index++) {
           const session = selectedSessions[index];
           if (!runningAccounts.has(session.accountId)) continue;
           const observed = await adapters[index].sessionStatus(session.sessionId);
-          const providerState = observed.classification === "accepted" ? String(observed.value?.status || observed.value?.state || "") : "unknown";
+          const providerState = observed.classification === "accepted" ? String(providerStatus(observed.value)?.status) : "unknown";
           const baseline = evidence.providerSessions[index]?.baseline?.promptCount;
-          const promptDelta = Number.isFinite(baseline) && Number.isFinite(observed.value?.promptCount) ? observed.value.promptCount - baseline : null;
+          const promptDelta = Number.isFinite(baseline) && Number.isFinite(providerStatus(observed.value)?.promptCount) ? providerStatus(observed.value).promptCount - baseline : null;
           if (/running|working|busy/i.test(providerState) && promptDelta === 1) actualRunningSessions.push({ accountId: session.accountId, sessionId: session.sessionId, status: providerState, promptCountDelta: promptDelta });
         }
-        samples.push({ observedAt: new Date().toISOString(), runningTaskIds: running.map((row) => row.taskId), actualRunningSessions });
+        samples.push({ observedAt: new Date().toISOString(), runningTaskIds: actualRunningSessions.map((session) => running.find((row) => row.selectedAccountId === session.accountId)?.taskId).filter(Boolean), actualRunningSessions });
         if (actualRunningSessions.length >= 2) evidence.gatewayRestart = { status: "blocked", stopAt: null, startAt: null, observedAt: new Date().toISOString(), confirmedRunningSessions: actualRunningSessions, reason: "Gateway and SupervisorRuntime share this process; stopping the gateway would stop the worker too. This checkout has no supported detached supervisor endpoint, so restart proof is not attempted." };
         if (terminal(last)) break;
       } catch (error) {

@@ -32,3 +32,11 @@ If the pre-stop safety gate is absent, restart is not attempted and is not repor
 ## Preparation checks
 
 `node --check scripts/verify-supervisor-restart.mjs` and `git diff --check` passed. The harness was not run, and no paid inference or live provider call was made during preparation. Runtime outcomes remain unknown until an operator executes the command with authorized test accounts.
+
+## Operator execution — 2026-10-10
+
+One real two-account job was accepted at 17:29:44 UTC. Both provider sessions were observed running before the temporary gateway and supervisor runtime closed at 17:29:51 UTC; both still reported running after local runtime shutdown. The runtime reopened the same SQLite state at 17:29:54 UTC, the gateway reused its listener and OAuth identity, and MCP initialization/tool discovery reconnected.
+
+The first harness run falsely rejected receipt stability because its post-restart gate also required zero claimed read operations. An ordinary observation claim can exist after restart without changing a send receipt. The check now requires quiescent operations only before shutdown. No new cloud task was launched to reconcile this test. The operator reopened the retained state, retrieved both exact markers and the complete parent job, verified the original two accepted chat operation IDs were unchanged, and independently confirmed exactly one additional prompt on each provider session. The real durable inbox returned eight owner-scoped events.
+
+Evidence: `../evidence/2026-10-10-restart-reconciliation.json` retains the initial incomplete report alongside the subsequent read-only verification. This verifies graceful gateway/runtime restart while remote execution continues, with durable results and no duplicate send. It does not verify abrupt OS-process termination, laptop disconnection, machine reboot, or large-scale worker concurrency.
