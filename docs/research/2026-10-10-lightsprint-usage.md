@@ -1,0 +1,20 @@
+# LightSprint usage and billing evidence
+
+Verified 2026-10-10. This report supplements the existing [`TELEMETRY.md`](../TELEMETRY.md) and [`PROVIDER-CAPABILITIES.md`](../PROVIDER-CAPABILITIES.md); it does not replace their gateway event or provider-reported usage model.
+
+## Evidence
+
+| Claim | Classification | Evidence and limit |
+|---|---|---|
+| Pro is $40 per seat/month, capped at 50 seats, and includes 10M credits per seat/month. | Documented | [Billing & Seats](https://app.lightsprint.ai/docs/billing/) states the plan, price, seat cap, and monthly credit allotment. [Pricing](https://lightsprint.ai/pricing) describes those credits as shared across the team. |
+| Pro credits go into one workspace-wide pool; all team members' work draws from that pool. | Documented | Billing & Seats explicitly says each seat adds 10M credits monthly to one workspace-wide pool, not a per-person allowance. The workspace is the billing pool identity. Do not multiply the pool by users, OAuth/API credentials, sessions, models, or slots. The documented entitlement is seats × 10M/month; without authoritative seat and billing state, even that is not an observed balance. |
+| Session status exposes `model`, `provider`, `promptCount`, `budgetUsed`, `maxBudget`, `aiGatewaySessionCostUsd`, `sandboxTier`, and `fundingSource`. | Executed | Read-only GET of the current authorized session's status on 2026-10-10. This is a single-session observation; no IDs or values are retained here. `model`/`provider` identify that session, not aggregate per-model spend. `promptCount` is a reported count. `budgetUsed` and `maxBudget` have no unit defined in the exposed schema. `aiGatewaySessionCostUsd` is a reported USD session-cost field, but its calculation/billing reconciliation is undocumented here; treat it as reported/provisional, not a verified credit debit or invoice amount. `sandboxTier` and `fundingSource` are labels, not usage amounts. |
+| The exposed native MCP offers `lightsprint_api({ method, path, body })`, and the published MCP guide describes it as the one tool covering reachable API endpoints. | Documented | [MCP guide](https://app.lightsprint.ai/docs/mcp/); current native tool schema inspected 2026-10-10. The exposed endpoint list includes `GET /api/agent-sessions/{sessionId}/status` but no balance, remaining-credit, credit-ledger, or per-model/per-slot usage endpoint. The schema describes other session/task operations, but none supplies those missing aggregates. |
+| A balance API, token counters, model/slot breakdown, and a per-account credit pool are available. | Unknown / unsupported by inspected evidence | No such fields or endpoint appeared in the exposed schema or cited public docs. This does not establish whether an internal or separately permissioned billing API exists. Do not infer tokens from prompts, credit usage from cost, or consumption from capacity/slot occupancy. |
+| Requests, attempts, and probes are gateway-observed; provider usage records must come from an explicit provider signal. | Implemented in Token2OAuth | See `docs/TELEMETRY.md` and `src/telemetry.ts`. These local event counts are not LightSprint credit accounting. No LightSprint credit observation was made in this research. |
+
+## Consequences
+
+Treat the **workspace** as the billing pool and an individual user/account as an attribution dimension only. A session may report one model, but status supplies no token counts or per-model rollup; slot capacity is a separate operational dimension and is not a credit pool. Keep credits, USD cost, prompt counts, token counts, and sandbox quantities in separate metrics with explicit units and provenance. Missing balance or consumption remains `unknown`, never zero. Do not add together a workspace credit total and its per-user/session attributions.
+
+No paid inference, billing mutation, subscription change, or private browser/API endpoint was used. Public docs establish plan entitlements and shared-pool semantics; current-session status establishes only the listed field presence. Billing balance, actual credit debits, token totals, and slot/model usage remain unverified.
