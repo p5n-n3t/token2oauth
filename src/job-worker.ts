@@ -1,0 +1,396 @@
+/** Durable Snooze operation consumer. Importing this module starts no timers or I/O. */
+
+export type OperationOutcome = "accepted" | "rejected" | "ambiguous";
+
+export interface JobResult<T = unknown> {
+  classification: OperationOutcome;
+  accountId: string;
+  value?: T;
+  reason?: string;
+  instructionsVerified?: boolean;
+  reportedModel?: string;
+}
+
+export interface PinnedJobsAdapter {
+  readonly accountId?: string;
+  sessionStatus(sessionId: string): Promise<JobResult>;
+  sessionTranscript(sessionId: string): Promise<JobResult>;
+  sendMessage(sessionId: string, message: string, clientMessageId: string): Promise<JobResult>;
+  stopSession(sessionId: string): Promise<JobResult>;
+  createTask?(title: string, stackId: string): Promise<JobResult>;
+  patchTaskInstructions?(taskId: string, description: string): Promise<JobResult>;
+  readTask?(taskId: string): Promise<JobResult>;
+  listTaskAgents?(taskId: string): Promise<JobResult>;
+  /** Must request the exact model; the stock LightSprint API has no such selector. */
+  launchTaskWithModel?(taskId: string, provider: string, model: string): Promise<JobResult>;
+}
+
+export interface JobBridge {
+  request<T = unknown>(method: "POST", route: string, body?: unknown,
+    options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<T | undefined>;
+}
+
+export interface JobOperation {
+  operationId: string;
+  attemptId: string;
+  generation: number;
+  selectedAccountId: string;
+  kind: string;
+  providerTaskId?: string | null;
+  sessionId?: string | null;
+  input: Record<string, unknown>;
+}
+
+export interface JobWorkerOptions {
+  bridge: JobBridge;
+  adapterFactory: (accountId: string, limits: { timeoutMs: number }) => PinnedJobsAdapter | Promise<PinnedJobsAdapter>;
+  /** Includes current enabled/auth/quota eligibility; this must be rechecked immediately before mutation. */
+  isAccountEligible: (accountId: string) => boolean | Promise<boolean>;
+  workerId: string;
+  allowedModels: readonly string[];
+  maxConcurrent?: number;
+  leaseSeconds?: number;
+  pollIntervalMs?: number;
+  requestTimeoutMs?: number;
+  adapterTimeoutMs?: number;
+  now?: () => number;
+  /** Fresh task operations are opt-in. Launch additionally requires an exact-model adapter method. */
+  allowFreshOperations?: boolean;
+  onDiagnostic?: (event: { code: string; operationId?: string; accountId?: string }) => void;
+}
+
+export interface JobWorker {
+  start(): void;
+  stop(): Promise<void>;
+  tick(): Promise<void>;
+}
+
+const MODEL = "gpt-6-luna";
+const MAX_TEXT = 2_048;
+const MAX_TRANSCRIPT_CHARS = 250_000;
+const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const MESSAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function object(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+function text(value: unknown, max = MAX_TEXT): string | undefined {
+  return typeof value === "string" && value.trim() && value.length <= max ? value : undefined;
+}
+function field(source: unknown, ...keys: string[]): unknown {
+  const row = object(source);
+  if (!row) return undefined;
+  for (const key of keys) if (Object.hasOwn(row, key)) return row[key];
+  return undefined;
+}
+function resultRecord(value: unknown): Record<string, unknown> {
+  return object(field(value, "value")) ?? object(value) ?? {};
+}
+function isFreshAccepted(result: JobResult): boolean { return result.classification === "accepted"; }
+function errorCode(error: unknown): string {
+  const raw = object(error)?.code ?? (error instanceof Error ? error.name : "operation_error");
+  return typeof raw === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(raw) ? raw : "operation_error";
+}
+function isoOrNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+function newestAssistant(transcript: unknown, dispatchAt: number): { text: string; at: number } | undefined {
+  let encoded: string;
+  try { encoded = JSON.stringify(transcript); } catch { return undefined; }
+  if (encoded.length > MAX_TRANSCRIPT_CHARS) return undefined;
+  const root = object(transcript);
+  const candidates = [root?.messages, root?.entries, root?.events, Array.isArray(transcript) ? transcript : undefined]
+    .find(Array.isArray) as unknown[] | undefined;
+  if (!candidates) return undefined;
+  let selected: { text: string; at: number } | undefined;
+  for (const candidate of candidates) {
+    const row = object(candidate);
+    if (!row || ![row.role, row.author, row.type].some((v) => typeof v === "string" && /^(assistant|assistant_message)$/i.test(v))) continue;
+    const at = isoOrNumber(row.createdAt ?? row.at ?? row.timestamp ?? row.created_at);
+    if (at === undefined || at < dispatchAt) continue;
+    const rawContent = row.text ?? row.message ?? row.content;
+    let assistantText: string | undefined;
+    if (typeof rawContent === "string") assistantText = rawContent;
+    else if (Array.isArray(rawContent)) assistantText = rawContent.map((part) => text(field(part, "text"), MAX_TRANSCRIPT_CHARS) ?? "").join("");
+    if (assistantText === undefined) continue;
+    const normalized = assistantText.slice(0, MAX_TEXT);
+    if (!selected || at > selected.at) selected = { text: normalized, at };
+  }
+  return selected;
+}
+function validOperation(value: unknown): value is JobOperation {
+  const row = object(value);
+  return !!row && ID.test(String(row.operationId ?? "")) && ID.test(String(row.attemptId ?? "")) &&
+    Number.isInteger(row.generation) && Number(row.generation) > 0 && ID.test(String(row.selectedAccountId ?? "")) &&
+    typeof row.kind === "string" && object(row.input) !== undefined;
+}
+
+/** Create an explicitly controlled worker; no polling occurs until start() is called. */
+export function createJobWorker(options: JobWorkerOptions): JobWorker {
+  const maxConcurrent = options.maxConcurrent ?? 2;
+  const leaseSeconds = options.leaseSeconds ?? 240;
+  const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
+  const adapterTimeoutMs = options.adapterTimeoutMs ?? 30_000;
+  const now = options.now ?? Date.now;
+  if (!ID.test(options.workerId) || !Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 32 ||
+      !Number.isInteger(leaseSeconds) || leaseSeconds < 30 || leaseSeconds > 300 ||
+      !Number.isInteger(pollIntervalMs) || pollIntervalMs < 10 ||
+      !Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs >= leaseSeconds * 1_000 ||
+      !Number.isInteger(adapterTimeoutMs) || adapterTimeoutMs < 1 || adapterTimeoutMs > 120_000 ||
+      adapterTimeoutMs + requestTimeoutMs >= leaseSeconds * 1_000 ||
+      !options.allowedModels.includes(MODEL)) throw new TypeError("Invalid job worker configuration");
+
+  let running = false;
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let tickPromise: Promise<void> | undefined;
+  let controller: AbortController | undefined;
+  const active = new Map<string, Promise<void>>();
+  const receipts = new Map<string, { body: Record<string, unknown>; attempts: number }>();
+  const leaseDeadlines = new Map<string, number>();
+  const diagnostic = (code: string, op?: JobOperation) => options.onDiagnostic?.({ code,
+    ...(op ? { operationId: op.operationId, accountId: op.selectedAccountId } : {}) });
+  const postResult = async (operationId: string, body: Record<string, unknown>): Promise<boolean> => {
+    try {
+      await options.bridge.request("POST", `/v1/operations/${operationId}/result`, body, { timeoutMs: requestTimeoutMs });
+      receipts.delete(operationId);
+      leaseDeadlines.delete(operationId);
+      return true;
+    } catch {
+      const previous = receipts.get(operationId);
+      receipts.set(operationId, { body, attempts: (previous?.attempts ?? 0) + 1 });
+      diagnostic("result_receipt_pending");
+      return false;
+    }
+  };
+  const submit = async (op: JobOperation, outcome: OperationOutcome, result: Record<string, unknown> = {}, errorClass?: string) => {
+    const body = { workerId: options.workerId, outcome, observedAt: new Date(now()).toISOString(), result,
+      ...(errorClass ? { errorClass } : {}) };
+    await postResult(op.operationId, body);
+  };
+
+  const checkSession = async (adapter: PinnedJobsAdapter, sessionId: string) => {
+    const checked = await adapter.sessionStatus(sessionId);
+    if (!isFreshAccepted(checked)) return { result: checked, status: undefined as Record<string, unknown> | undefined };
+    const status = resultRecord(checked);
+    const row = object(field(status, "status")) ?? status;
+    return { result: checked, status: row };
+  };
+
+  const execute = async (op: JobOperation): Promise<void> => {
+    let outcome: OperationOutcome = "rejected";
+    let result: Record<string, unknown> = {};
+    let errorClass: string | undefined;
+    let mutationStarted = false;
+    const input = op.input;
+    try {
+      if (!await options.isAccountEligible(op.selectedAccountId)) { errorClass = "account_unavailable"; return await submit(op, outcome, result, errorClass); }
+      const adapter = await options.adapterFactory(op.selectedAccountId, { timeoutMs: adapterTimeoutMs });
+      if (adapter.accountId !== undefined && adapter.accountId !== op.selectedAccountId) { errorClass = "account_identity_mismatch"; return await submit(op, outcome, result, errorClass); }
+      const sessionId = text(op.sessionId ?? input.sessionId, 128);
+      if (op.kind === "chat_session") {
+        const message = text(input.instructions, 20_000);
+        const clientMessageId = text(input.clientMessageId, 128);
+        if (!sessionId || !message || !clientMessageId || !MESSAGE_ID.test(clientMessageId)) { errorClass = "invalid_operation_input"; return await submit(op, outcome, result, errorClass); }
+        if (stopped || !running || (leaseDeadlines.get(op.operationId) ?? 0) - now() <= adapterTimeoutMs + requestTimeoutMs) {
+          errorClass = "worker_stopping_or_lease_insufficient"; return await submit(op, outcome, result, errorClass);
+        }
+        const checked = await checkSession(adapter, sessionId);
+        const status = checked.status;
+        const registeredModel = field(status, "registeredModel", "model", "reportedModel");
+        const state = field(status, "status", "state");
+        if (!status || checked.result.classification !== "accepted" || field(status, "isOwner") !== true ||
+            field(status, "canSendMessage") !== true || registeredModel !== MODEL || !options.allowedModels.includes(String(registeredModel)) ||
+            typeof state !== "string" || state.toLowerCase() !== "idle") {
+          errorClass = checked.result.classification === "ambiguous" ? "session_preflight_ambiguous" : "session_not_sendable";
+          return await submit(op, checked.result.classification === "ambiguous" ? "ambiguous" : "rejected", {}, errorClass);
+        }
+        if (!running || stopped || (leaseDeadlines.get(op.operationId) ?? 0) - now() <= adapterTimeoutMs + requestTimeoutMs || !await options.isAccountEligible(op.selectedAccountId)) {
+          errorClass = "account_unavailable_or_stopping"; return await submit(op, outcome, {}, errorClass);
+        }
+        mutationStarted = true;
+        const sent = await adapter.sendMessage(sessionId, message, clientMessageId); // exactly one call, never retried
+        outcome = sent.classification;
+        if (outcome === "accepted") result = { sessionId, reportedModel: MODEL, status: "submitted" };
+        else errorClass = text(sent.reason, 80) ?? (outcome === "ambiguous" ? "chat_ambiguous" : "chat_rejected");
+        return await submit(op, outcome, result, errorClass);
+      }
+      if (op.kind === "observe_session") {
+        if (!sessionId) { errorClass = "invalid_operation_input"; return await submit(op, outcome, result, errorClass); }
+        const checked = await checkSession(adapter, sessionId);
+        if (!checked.status || checked.result.classification !== "accepted") {
+          errorClass = checked.result.classification === "ambiguous" ? "status_ambiguous" : "status_unavailable";
+          return await submit(op, checked.result.classification, {}, errorClass);
+        }
+        const rawStatus = field(checked.status, "status", "state");
+        const status = typeof rawStatus === "string" ? rawStatus.slice(0, 80) : "unknown";
+        let fresh: { text: string; at: number } | undefined;
+        if (status.toLowerCase() === "idle") {
+          const dispatchAt = isoOrNumber(input.dispatchAt);
+          if (dispatchAt === undefined) { errorClass = "dispatch_time_missing"; return await submit(op, "rejected", {}, errorClass); }
+          const transcript = await adapter.sessionTranscript(sessionId);
+          if (transcript.classification === "ambiguous") { errorClass = "transcript_ambiguous"; return await submit(op, "ambiguous", {}, errorClass); }
+          if (transcript.classification === "accepted") fresh = newestAssistant(transcript.value, dispatchAt);
+        }
+        result = { sessionId, status: fresh ? "assistant_result_ready" : "unknown" };
+        const model = field(checked.status, "reportedModel", "model", "registeredModel");
+        if (typeof model === "string" && model.length <= 128) result.reportedModel = model;
+        if (fresh) {
+          result.assistantText = fresh.text;
+          result.assistantAt = new Date(fresh.at).toISOString();
+        }
+        outcome = "accepted";
+        return await submit(op, outcome, result);
+      }
+      if (op.kind === "cancel_session") {
+        if (!sessionId) { errorClass = "invalid_operation_input"; return await submit(op, outcome, result, errorClass); }
+        if (!running || stopped || (leaseDeadlines.get(op.operationId) ?? 0) - now() <= requestTimeoutMs || !await options.isAccountEligible(op.selectedAccountId)) {
+          errorClass = "account_unavailable_or_stopping"; return await submit(op, outcome, {}, errorClass);
+        }
+        mutationStarted = true;
+        const stoppedSession = await adapter.stopSession(sessionId);
+        if (stoppedSession.classification !== "accepted") {
+          outcome = stoppedSession.classification;
+          errorClass = text(stoppedSession.reason, 80) ?? "stop_unconfirmed";
+          return await submit(op, outcome, {}, errorClass);
+        }
+        const confirmed = await checkSession(adapter, sessionId);
+        const finalState = field(confirmed.status, "status", "state");
+        if (confirmed.result.classification === "accepted" && typeof finalState === "string" && /^(stopped|cancelled|canceled)$/i.test(finalState)) {
+          outcome = "accepted"; result = { sessionId, status: "cancelled" };
+        } else { outcome = "ambiguous"; errorClass = "cancellation_unconfirmed"; }
+        return await submit(op, outcome, result, errorClass);
+      }
+      if (["create_task", "patch_task", "verify_task_packet", "launch_task"].includes(op.kind)) {
+        if (!options.allowFreshOperations) { errorClass = "fresh_operations_disabled"; return await submit(op, "rejected", {}, errorClass); }
+        if (!await options.isAccountEligible(op.selectedAccountId)) { errorClass = "account_unavailable"; return await submit(op, "rejected", {}, errorClass); }
+        const instructions = text(input.instructions, 16_384);
+        const taskId = text(op.providerTaskId ?? input.providerTaskId, 128);
+        if (!instructions || !text(input.stackId, 128) && op.kind === "create_task" || !taskId && op.kind !== "create_task") {
+          errorClass = "fresh_operation_inputs_incomplete"; return await submit(op, "rejected", {}, errorClass);
+        }
+        if (op.kind === "create_task" && adapter.createTask && text(input.title, 500)) {
+          if ((leaseDeadlines.get(op.operationId) ?? 0) - now() <= adapterTimeoutMs + requestTimeoutMs) {
+            errorClass = "worker_stopping_or_lease_insufficient"; return await submit(op, "rejected", {}, errorClass);
+          }
+          mutationStarted = true;
+          const created = await adapter.createTask(String(input.title), String(input.stackId));
+          if (created.classification !== "accepted") { outcome = created.classification; errorClass = text(created.reason, 80) ?? "create_task_failed"; return await submit(op, outcome, {}, errorClass); }
+          const id = field(created.value, "id", "taskId", "providerTaskId");
+          if (typeof id !== "string" || !ID.test(id)) { outcome = "ambiguous"; errorClass = "created_task_identity_unverified"; return await submit(op, outcome, {}, errorClass); }
+          outcome = "accepted"; result = { providerTaskId: id }; return await submit(op, outcome, result);
+        }
+        if (op.kind === "patch_task" && adapter.patchTaskInstructions) {
+          if ((leaseDeadlines.get(op.operationId) ?? 0) - now() <= adapterTimeoutMs + requestTimeoutMs) {
+            errorClass = "worker_stopping_or_lease_insufficient"; return await submit(op, "rejected", {}, errorClass);
+          }
+          mutationStarted = true;
+          const patched = await adapter.patchTaskInstructions(taskId!, instructions);
+          outcome = patched.instructionsVerified === true && patched.classification === "accepted" ? "accepted" : patched.classification === "ambiguous" ? "ambiguous" : "rejected";
+          errorClass = outcome === "accepted" ? undefined : text(patched.reason, 80) ?? "instruction_roundtrip_unverified";
+          result = outcome === "accepted" ? { providerTaskId: taskId!, status: "instructions_verified" } : {};
+          return await submit(op, outcome, result, errorClass);
+        }
+        if (op.kind === "verify_task_packet" && adapter.readTask) {
+          const readback = await adapter.readTask(taskId!);
+          const row = resultRecord(readback);
+          outcome = readback.classification === "ambiguous" ? "ambiguous" : readback.classification === "accepted" &&
+            field(row, "id", "taskId") === taskId && field(row, "description") === instructions ? "accepted" : "rejected";
+          errorClass = outcome === "accepted" ? undefined : "instruction_roundtrip_unverified";
+          result = outcome === "accepted" ? { providerTaskId: taskId!, status: "instructions_verified" } : {};
+          return await submit(op, outcome, result, errorClass);
+        }
+        if (op.kind === "launch_task" && adapter.launchTaskWithModel && adapter.readTask && text(input.provider, 32) &&
+            (leaseDeadlines.get(op.operationId) ?? 0) - now() > adapterTimeoutMs + requestTimeoutMs &&
+            await options.isAccountEligible(op.selectedAccountId)) {
+          const readback = await adapter.readTask(taskId!);
+          const task = resultRecord(readback);
+          if (readback.classification !== "accepted" || field(task, "id", "taskId") !== taskId || field(task, "description") !== instructions) {
+            outcome = readback.classification === "ambiguous" ? "ambiguous" : "rejected";
+            errorClass = "instruction_roundtrip_unverified";
+            return await submit(op, outcome, {}, errorClass);
+          }
+          mutationStarted = true;
+          const launched = await adapter.launchTaskWithModel(taskId!, String(input.provider), MODEL);
+          if (launched.classification === "accepted" && launched.reportedModel === MODEL) { outcome = "accepted"; result = { providerTaskId: taskId!, reportedModel: MODEL }; }
+          else { outcome = launched.classification === "ambiguous" ? "ambiguous" : "rejected"; errorClass = "exact_model_unverified"; }
+          return await submit(op, outcome, result, errorClass);
+        }
+        errorClass = "operation_not_supported_by_adapter";
+        return await submit(op, "rejected", {}, errorClass);
+      }
+      if (op.kind === "inspect_task_agents" && adapter.listTaskAgents) {
+        const taskId = text(op.providerTaskId ?? input.providerTaskId, 128);
+        if (!taskId) { errorClass = "invalid_operation_input"; return await submit(op, "rejected", {}, errorClass); }
+        const listed = await adapter.listTaskAgents(taskId);
+        outcome = listed.classification;
+        if (outcome === "accepted") result = { providerTaskId: taskId, status: "agents_observed" };
+        else errorClass = text(listed.reason, 80) ?? "agents_unavailable";
+        return await submit(op, outcome, result, errorClass);
+      }
+      errorClass = "unsupported_operation_kind";
+      return await submit(op, "rejected", {}, errorClass);
+    } catch (error) {
+      outcome = mutationStarted ? "ambiguous" : "rejected";
+      errorClass = errorCode(error);
+      diagnostic(errorClass, op);
+      await submit(op, outcome, result, errorClass);
+    }
+  };
+
+  const schedule = () => {
+    if (!running || timer) return;
+    timer = setTimeout(() => { timer = undefined; void tick().finally(schedule); }, pollIntervalMs);
+  };
+
+  const tick = (): Promise<void> => {
+    if (!running || tickPromise) return tickPromise ?? Promise.resolve();
+    tickPromise = (async () => {
+      for (const [id, receipt] of receipts) await postResult(id, receipt.body);
+      while (running && active.size + receipts.size < maxConcurrent) {
+        const claimController = new AbortController();
+        controller = claimController;
+        let claimed: unknown;
+        try {
+          claimed = await options.bridge.request("POST", "/v1/operations/claim", { workerId: options.workerId, leaseSeconds },
+            { signal: claimController.signal, timeoutMs: requestTimeoutMs });
+        } catch (error) {
+          if (running) diagnostic(errorCode(error));
+          break;
+        } finally { if (controller === claimController) controller = undefined; }
+        if (!running || claimed === undefined || claimed === null) break;
+        const raw = object(claimed)?.operation ?? claimed;
+        if (!validOperation(raw)) { diagnostic("invalid_claim_envelope"); break; }
+        const op = raw as JobOperation;
+        if (active.has(op.operationId) || receipts.has(op.operationId)) { diagnostic("duplicate_operation_claim", op); break; }
+        leaseDeadlines.set(op.operationId, now() + leaseSeconds * 1_000 - requestTimeoutMs);
+        const task = execute(op).finally(() => { active.delete(op.operationId); });
+        active.set(op.operationId, task);
+      }
+    })().finally(() => { tickPromise = undefined; });
+    return tickPromise;
+  };
+
+  return {
+    start() {
+      if (running) return;
+      stopped = false; running = true;
+      void tick().finally(schedule);
+    },
+    async stop() {
+      running = false; stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      controller?.abort();
+      await tickPromise?.catch(() => undefined);
+      await Promise.allSettled([...active.values()]);
+    },
+    tick,
+  };
+}
