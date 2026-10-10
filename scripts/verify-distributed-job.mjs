@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -12,6 +12,7 @@ import { StateStore } from "../dist/store.js";
 import { buildApp } from "../dist/server.js";
 import { createSupervisorRuntime, readSupervisorRuntimeConfig } from "../dist/supervisor-runtime.js";
 import { pkceS256 } from "../dist/crypto.js";
+import { PROVIDER_PROFILES } from "../dist/provider-capabilities.js";
 
 const MAX_WAIT_MS = 5 * 60_000;
 const TERMINAL = new Set(["complete", "completed", "failed", "cancelled", "ambiguous", "blocked"]);
@@ -20,7 +21,8 @@ function args(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
-    if (!["--config", "--state-dir", "--project-id", "--tasks", "--timeout-seconds"].includes(key) || !argv[i + 1] || argv[i + 1].startsWith("--")) throw new Error("Usage: verify-distributed-job.mjs --config PRIVATE_JSON --state-dir PRIVATE_STATE_DIR [--project-id ID] [--tasks 2|3] [--timeout-seconds 300]");
+    if (key === "--isolated-auth") { out.isolated_auth = true; continue; }
+    if (!["--config", "--state-dir", "--project-id", "--tasks", "--timeout-seconds"].includes(key) || !argv[i + 1] || argv[i + 1].startsWith("--")) throw new Error("Usage: verify-distributed-job.mjs --config PRIVATE_JSON --state-dir PRIVATE_STATE_DIR [--project-id ID] [--tasks 2|3] [--timeout-seconds 300] [--isolated-auth]");
     out[key.slice(2).replaceAll("-", "_")] = argv[++i];
   }
   if (!out.config || !out.state_dir) throw new Error("Both --config and --state-dir are required");
@@ -40,7 +42,7 @@ function ephemeralIssuerStore(store, base) {
   return new Proxy(store, { get(target, property) {
     if (property === "load") return async () => {
       const state = await target.load();
-      return { ...state, config: { ...state.config, publicBaseUrl: base } };
+      return { ...state, config: { ...state.config, publicBaseUrl: typeof base === "function" ? base() : base } };
     };
     const value = Reflect.get(target, property, target);
     return typeof value === "function" ? value.bind(target) : value;
@@ -128,7 +130,7 @@ function parseTaskRows(value) {
 function timestamp(row, keys) {
   for (const key of keys) {
     const value = row?.[key];
-    const parsed = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
+    const parsed = typeof value === "number" ? (value < 100_000_000_000 ? value * 1000 : value) : typeof value === "string" ? Date.parse(value) : NaN;
     if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
   }
   return null;
@@ -137,6 +139,10 @@ function terminal(value) {
   if (TERMINAL.has(String(value?.state || "").toLowerCase())) return true;
   const rows = parseTaskRows(value);
   return rows.length > 0 && rows.every((row) => TERMINAL.has(String(row.state || "").toLowerCase()));
+}
+function nativeLightSprintUrl(value) {
+  if (typeof value !== "string") return false;
+  try { const actual = new URL(value); const expected = new URL(PROVIDER_PROFILES.lightsprint.defaultServerUrl); return actual.protocol === "https:" && actual.hostname === expected.hostname && actual.port === "" && actual.pathname === "/mcp" && !actual.username && !actual.password && !actual.search && !actual.hash && actual.href === expected.href; } catch { return false; }
 }
 function evidenceOverlap(samples, rows) {
   const simultaneous = samples.filter((sample) => sample.runningTaskIds.length > 1);
@@ -158,7 +164,7 @@ async function main() {
   if (!project) throw new Error("configured_project_not_found");
   const state = await store.load();
   const accounts = project.accountIds.map((id) => state.accounts.find((row) => row.id === id)).filter(Boolean);
-  if (accounts.length < options.tasks || accounts.some((row) => !row.enabled || row.provider !== "lightsprint")) throw new Error("selected project lacks enough enabled LightSprint accounts in StateStore");
+  if (accounts.length < options.tasks || accounts.some((row) => row.enabled !== true || !(row.provider === "lightsprint" || (row.provider === "generic-bearer-mcp" && nativeLightSprintUrl(state.config.upstreamUrl))))) throw new Error("selected project lacks enough enabled LightSprint-eligible accounts in StateStore");
   const sessionAccounts = new Set(project.registeredSessions.map((row) => row.accountId));
   if (accounts.filter((row) => sessionAccounts.has(row.id)).length < options.tasks) throw new Error("selected project lacks enough registered existing sessions");
 
@@ -167,19 +173,42 @@ async function main() {
   let oauth;
   const oauthCleanup = {};
   let isolatedRuntimeDir;
+  let isolatedAuthDir;
+  let authStore = store;
   let base;
   let submissionAttempted = false;
   let evidence = { assignmentId: null, projectId: project.projectId, submittedAt: null, submission: "not_attempted", state: "blocked", tasks: [], runningIntervals: { simultaneousRunningSamples: [], taskIntervals: [], overlapObserved: false }, blockers: [] };
   evidence.eligibleAccountIds = accounts.slice(0, options.tasks).map((row) => row.id);
   try {
-    isolatedRuntimeDir = await mkdtemp(resolve(tmpdir(), "t2o-r34-runtime-"));
-    runtime = await createSupervisorRuntime({ configPath: resolve(options.config), configDir: isolatedRuntimeDir, supervisorCwd: fileURLToPath(new URL("../supervisor/", import.meta.url)), store });
-    const built = await buildApp(ephemeralIssuerStore(store, "http://127.0.0.1"), { supervisorBackend: runtime });
-    gateway = createServer(built.app);
-    const address = await listen(gateway);
-    base = `http://127.0.0.1:${address.port}`;
-    const password = await promptAdminPassword();
-    oauth = await issueScopedToken(base, password, (values) => Object.assign(oauthCleanup, values));
+    isolatedRuntimeDir = await mkdtemp(resolve(tmpdir(), "t2o-r40-runtime-"));
+    if (options.isolated_auth) {
+      isolatedAuthDir = await mkdtemp(resolve(tmpdir(), "t2o-r40-auth-"));
+      process.env.TOKEN2OAUTH_CONFIG_DIR = isolatedAuthDir;
+      authStore = new StateStore();
+      const temporaryPassword = randomBytes(48).toString("base64url");
+      await authStore.init({ adminPassword: temporaryPassword });
+      const lazyBackend = { callTool: (...args) => runtime ? runtime.callTool(...args) : Promise.reject(new Error("isolated runtime is not ready")) };
+      const built = await buildApp(ephemeralIssuerStore(authStore, () => base || "http://127.0.0.1"), { supervisorBackend: lazyBackend });
+      gateway = createServer(built.app);
+      const address = await listen(gateway);
+      base = `http://127.0.0.1:${address.port}`;
+      oauth = await issueScopedToken(base, temporaryPassword, (values) => Object.assign(oauthCleanup, values));
+      const privateConfig = JSON.parse(await readFile(resolve(options.config), "utf8"));
+      const selected = privateConfig.projects?.find((row) => row.projectId === project.projectId);
+      if (!selected) throw new Error("private_config_project_disappeared");
+      selected.clientIds = [oauth.clientId];
+      const runtimeConfigCopy = resolve(isolatedRuntimeDir, "runtime.json");
+      await writeFile(runtimeConfigCopy, `${JSON.stringify(privateConfig, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      runtime = await createSupervisorRuntime({ configPath: runtimeConfigCopy, configDir: resolve(isolatedRuntimeDir, "bridge"), supervisorCwd: fileURLToPath(new URL("../supervisor/", import.meta.url)), store });
+    } else {
+      runtime = await createSupervisorRuntime({ configPath: resolve(options.config), configDir: isolatedRuntimeDir, supervisorCwd: fileURLToPath(new URL("../supervisor/", import.meta.url)), store });
+      const built = await buildApp(ephemeralIssuerStore(store, () => base || "http://127.0.0.1"), { supervisorBackend: runtime });
+      gateway = createServer(built.app);
+      const address = await listen(gateway);
+      base = `http://127.0.0.1:${address.port}`;
+      const password = await promptAdminPassword();
+      oauth = await issueScopedToken(base, password, (values) => Object.assign(oauthCleanup, values));
+    }
     const tools = await toolsList(base, oauth.accessToken);
     if (!toolSupportsExpectedMarker(tools)) {
       evidence.blockers.push("job_submit schema does not accept output.expectedMarker; completion cannot be safely validated by this checkout");
@@ -235,18 +264,23 @@ async function main() {
     }
     if (last) {
       const rows = parseTaskRows(last);
-      evidence.state = !terminal(last) && Date.now() >= deadline ? "timeout" : last.state || (terminal(last) ? "terminal" : "unknown");
+      const tasksComplete = rows.length > 0 && rows.every((row) => ["complete", "completed"].includes(String(row.state || "").toLowerCase()));
+      const jobComplete = ["complete", "completed"].includes(String(last.state || "").toLowerCase()) || tasksComplete;
+      evidence.state = !terminal(last) && Date.now() >= deadline ? "timeout" : jobComplete ? "complete" : last.state || (terminal(last) ? "terminal" : "unknown");
       evidence.tasks = rows.map((row) => ({ taskId: row.taskId, state: row.state || "unknown", selectedAccountId: row.selectedAccountId || null, startedAt: timestamp(row, ["startedAt", "started_at", "dispatchAt", "dispatch_at"]), finishedAt: timestamp(row, ["finishedAt", "finished_at", "completedAt", "completed_at"]), expectedMarkerMatched: false }));
       evidence.distinctSelectedAccounts = new Set(evidence.tasks.map((task) => task.selectedAccountId).filter(Boolean)).size;
       if (evidence.tasks.length > 1 && evidence.distinctSelectedAccounts < 2) evidence.blockers.push("status did not show work assigned to multiple accounts; distributed execution is unproven");
       evidence.runningIntervals = evidenceOverlap(samples, rows);
-      if (terminal(last) && ["complete", "completed"].includes(String(evidence.state).toLowerCase())) {
+      if (terminal(last) && jobComplete) {
         const result = await mcp(base, oauth.accessToken, 5, "job_results", { projectId: project.projectId, jobId });
-        if (result.resultsAvailable !== true) evidence.blockers.push("job_results did not expose validated task text; completion markers remain unverified");
+        const resultRows = Array.isArray(result.results) ? result.results : parseTaskRows(result);
+        if (result.resultsAvailable !== true && !Array.isArray(result.results)) evidence.blockers.push("job_results did not expose the documented bounded results DTO; completion markers remain unverified");
+        if (Array.isArray(result.results) && evidence.tasks.some((task) => !result.results.some((item) => (item.task_id || item.taskId) === task.taskId && typeof item.text === "string"))) evidence.blockers.push("job_results omitted one or more bounded task text rows; completion markers remain unverified");
         for (const task of evidence.tasks) {
-          const row = parseTaskRows(result).find((item) => item.taskId === task.taskId);
-          const text = typeof row?.result === "string" ? row.result : typeof row?.assistantText === "string" ? row.assistantText : "";
+          const row = resultRows.find((item) => (item.taskId || item.task_id) === task.taskId);
+          const text = typeof row?.text === "string" ? row.text : typeof row?.result === "string" ? row.result : typeof row?.assistantText === "string" ? row.assistantText : "";
           task.expectedMarkerMatched = text === `${jobId}-${task.taskId}-OK`;
+          task.resultAt = timestamp(row, ["assistant_at", "assistantAt", "at"]);
         }
       }
     } else if (submissionAttempted) evidence.state = "status_unconfirmed";
@@ -254,7 +288,7 @@ async function main() {
     if (oauth || oauthCleanup.clientId) {
       const refreshToken = oauth?.refreshToken || oauthCleanup.refreshToken;
       const tokenHash = refreshToken ? createHash("sha256").update(refreshToken).digest("base64url") : null;
-      await store.update((current) => {
+      await authStore.update((current) => {
         current.oauthClients = current.oauthClients.filter((client) => client.clientId !== (oauth?.clientId || oauthCleanup.clientId));
         if (tokenHash) current.refreshTokens = current.refreshTokens.filter((record) => record.tokenHash !== tokenHash);
       }).catch(() => undefined);
@@ -263,6 +297,7 @@ async function main() {
     if (gateway?.listening) await closeServer(gateway);
     if (runtime) await runtime.close().catch(() => undefined);
     if (isolatedRuntimeDir) await rm(isolatedRuntimeDir, { recursive: true, force: true }).catch(() => undefined);
+    if (isolatedAuthDir) await rm(isolatedAuthDir, { recursive: true, force: true }).catch(() => undefined);
     process.stdout.write(`${JSON.stringify({ ...evidence, observedAt: new Date().toISOString(), cleanup: "local gateway, bridge child, temporary OAuth client and refresh record closed/removed; no remote session control sent" }, null, 2)}\n`);
   }
 }
