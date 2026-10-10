@@ -1,0 +1,660 @@
+{
+  "verifiedAt": "2026-10-10T17:04:42.750634+00:00",
+  "codeRef": "e436156",
+  "scope": "single authenticated MCP assignment; three pinned existing sessions on three accounts; exact marker outputs",
+  "rawHarnessResult": {
+    "assignmentId": "r34-1791651624641-5bd64713cf",
+    "projectId": "token2oauth-verification",
+    "submittedAt": "2026-10-10T17:00:24.641Z",
+    "submission": "accepted",
+    "state": "complete",
+    "tasks": [
+      {
+        "taskId": "task-1",
+        "state": "complete",
+        "selectedAccountId": "V0iI9ZYDWl6j",
+        "startedAt": "2026-10-10T17:00:25.515Z",
+        "finishedAt": null,
+        "expectedMarkerMatched": true,
+        "resultAt": "2026-10-10T17:00:32.347Z"
+      },
+      {
+        "taskId": "task-2",
+        "state": "complete",
+        "selectedAccountId": "DZGnca_Tap_H",
+        "startedAt": "2026-10-10T17:00:25.545Z",
+        "finishedAt": null,
+        "expectedMarkerMatched": true,
+        "resultAt": "2026-10-10T17:00:36.141Z"
+      },
+      {
+        "taskId": "task-3",
+        "state": "complete",
+        "selectedAccountId": "YFi2EwrtdFDB",
+        "startedAt": "2026-10-10T17:00:25.576Z",
+        "finishedAt": null,
+        "expectedMarkerMatched": true,
+        "resultAt": "2026-10-10T17:00:30.671Z"
+      }
+    ],
+    "runningIntervals": {
+      "simultaneousRunningSamples": [],
+      "taskIntervals": [
+        {
+          "taskId": "task-1",
+          "state": "complete",
+          "startedAt": "2026-10-10T17:00:25.515Z",
+          "finishedAt": null
+        },
+        {
+          "taskId": "task-2",
+          "state": "complete",
+          "startedAt": "2026-10-10T17:00:25.545Z",
+          "finishedAt": null
+        },
+        {
+          "taskId": "task-3",
+          "state": "complete",
+          "startedAt": "2026-10-10T17:00:25.576Z",
+          "finishedAt": null
+        }
+      ],
+      "overlapObserved": false
+    },
+    "blockers": [],
+    "eligibleAccountIds": [
+      "V0iI9ZYDWl6j",
+      "DZGnca_Tap_H",
+      "YFi2EwrtdFDB"
+    ],
+    "distinctSelectedAccounts": 3,
+    "observedAt": "2026-10-10T17:00:51.045Z",
+    "retainedRuntimeDir": null,
+    "cleanup": "local gateway and bridge child closed; unfinished job state retained when necessary; temporary OAuth records removed; no remote session control sent"
+  },
+  "independentProviderEvidence": {
+    "maxRunningObserved": 2,
+    "overlappingExecutionVerified": true,
+    "samples": [
+      {
+        "sampleAt": "2026-10-10T17:00:25.448Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:24.369Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 2,
+            "reportedCostUsd": 0.107202,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:24.829Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.515069,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:00:25.447Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 5,
+            "reportedCostUsd": 0.386539,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:00:29.917Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:28.895Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 2,
+            "reportedCostUsd": 0.107202,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:29.298Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.515069,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:00:29.917Z",
+            "status": "running",
+            "model": "gpt-6-luna",
+            "promptCount": 5,
+            "reportedCostUsd": 0.386539,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:00:34.349Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:33.411Z",
+            "status": "running",
+            "model": "gpt-6-luna",
+            "promptCount": 2,
+            "reportedCostUsd": 0.107202,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:33.925Z",
+            "status": "running",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.515069,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:00:34.349Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:00:39.022Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:38.007Z",
+            "status": "running",
+            "model": "gpt-6-luna",
+            "promptCount": 2,
+            "reportedCostUsd": 0.107202,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:38.381Z",
+            "status": "running",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.515069,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:00:39.022Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:00:43.545Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:42.603Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:43.116Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:00:43.545Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:00:47.729Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:46.934Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:47.319Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:00:47.729Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:00:51.792Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:51.100Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:51.441Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:00:51.792Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:00:56.085Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:55.301Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:55.720Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:00:56.085Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:01:00.173Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:00:59.519Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:00:59.862Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:01:00.173Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:01:04.421Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:01:03.629Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:01:04.026Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:01:04.421Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:01:08.616Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:01:07.828Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:01:08.209Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:01:08.616Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:01:12.787Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:01:11.979Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:01:12.410Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:01:12.787Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:01:17.017Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:01:16.199Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:01:16.591Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:01:17.017Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:01:21.103Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:01:20.345Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:01:20.808Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:01:21.102Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      },
+      {
+        "sampleAt": "2026-10-10T17:01:25.304Z",
+        "sessions": [
+          {
+            "accountId": "V0iI9ZYDWl6j",
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "observedAt": "2026-10-10T17:01:24.492Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 3,
+            "reportedCostUsd": 0.123319,
+            "isError": false
+          },
+          {
+            "accountId": "DZGnca_Tap_H",
+            "sessionId": "ck7907TEyc4_2qljQnwlQ",
+            "observedAt": "2026-10-10T17:01:24.900Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 7,
+            "reportedCostUsd": 0.530539,
+            "isError": false
+          },
+          {
+            "accountId": "YFi2EwrtdFDB",
+            "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+            "observedAt": "2026-10-10T17:01:25.304Z",
+            "status": "idle",
+            "model": "gpt-6-luna",
+            "promptCount": 6,
+            "reportedCostUsd": 0.387401,
+            "isError": false
+          }
+        ]
+      }
+    ]
+  },
+  "usage": [
+    {
+      "accountId": "V0iI9ZYDWl6j",
+      "sessionId": "EqFCnELEALprgv_1RierY",
+      "model": "gpt-6-luna",
+      "reportedBeforeUsd": 0.107202,
+      "reportedAfterUsd": 0.123319,
+      "reportedIncreaseUsd": 0.016117,
+      "promptCountBefore": 2,
+      "promptCountAfter": 3,
+      "source": "LightSprint session status",
+      "provisional": true,
+      "remainingCredits": "unknown"
+    },
+    {
+      "accountId": "DZGnca_Tap_H",
+      "sessionId": "ck7907TEyc4_2qljQnwlQ",
+      "model": "gpt-6-luna",
+      "reportedBeforeUsd": 0.515069,
+      "reportedAfterUsd": 0.530539,
+      "reportedIncreaseUsd": 0.01547,
+      "promptCountBefore": 6,
+      "promptCountAfter": 7,
+      "source": "LightSprint session status",
+      "provisional": true,
+      "remainingCredits": "unknown"
+    },
+    {
+      "accountId": "YFi2EwrtdFDB",
+      "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+      "model": "gpt-6-luna",
+      "reportedBeforeUsd": 0.386539,
+      "reportedAfterUsd": 0.387401,
+      "reportedIncreaseUsd": 0.000862,
+      "promptCountBefore": 5,
+      "promptCountAfter": 6,
+      "source": "LightSprint session status",
+      "provisional": true,
+      "remainingCredits": "unknown"
+    }
+  ],
+  "timestampSemantics": {
+    "startedAt": "local durable reservation time, not provider inference start",
+    "resultAt": "provider assistant message timestamp, not guaranteed execution end",
+    "runningOverlap": "independent provider running status observations"
+  },
+  "limits": [
+    "No verified 3-worker simultaneous peak",
+    "No 24/35-worker test",
+    "Provider slot maxima unknown",
+    "Remaining credits unknown",
+    "Gateway restart during live work not tested in this run",
+    "Production service unchanged"
+  ]
+}

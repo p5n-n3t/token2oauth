@@ -1,0 +1,67 @@
+{
+  "assignmentId": "r34-1791651466362-726d6c88d0",
+  "projectId": "token2oauth-verification",
+  "submittedAt": "2026-10-10T16:57:46.362Z",
+  "submission": "accepted",
+  "state": "held",
+  "tasks": [
+    {
+      "taskId": "task-1",
+      "state": "blocked",
+      "selectedAccountId": "V0iI9ZYDWl6j",
+      "startedAt": "2026-10-10T16:57:47.234Z",
+      "finishedAt": null,
+      "expectedMarkerMatched": false
+    },
+    {
+      "taskId": "task-2",
+      "state": "blocked",
+      "selectedAccountId": "DZGnca_Tap_H",
+      "startedAt": "2026-10-10T16:57:47.253Z",
+      "finishedAt": null,
+      "expectedMarkerMatched": false
+    },
+    {
+      "taskId": "task-3",
+      "state": "blocked",
+      "selectedAccountId": "YFi2EwrtdFDB",
+      "startedAt": "2026-10-10T16:57:47.282Z",
+      "finishedAt": null,
+      "expectedMarkerMatched": false
+    }
+  ],
+  "runningIntervals": {
+    "simultaneousRunningSamples": [],
+    "taskIntervals": [
+      {
+        "taskId": "task-1",
+        "state": "blocked",
+        "startedAt": "2026-10-10T16:57:47.234Z",
+        "finishedAt": null
+      },
+      {
+        "taskId": "task-2",
+        "state": "blocked",
+        "startedAt": "2026-10-10T16:57:47.253Z",
+        "finishedAt": null
+      },
+      {
+        "taskId": "task-3",
+        "state": "blocked",
+        "startedAt": "2026-10-10T16:57:47.282Z",
+        "finishedAt": null
+      }
+    ],
+    "overlapObserved": false
+  },
+  "blockers": [],
+  "eligibleAccountIds": [
+    "V0iI9ZYDWl6j",
+    "DZGnca_Tap_H",
+    "YFi2EwrtdFDB"
+  ],
+  "distinctSelectedAccounts": 3,
+  "observedAt": "2026-10-10T16:57:50.532Z",
+  "retainedRuntimeDir": "/tmp/t2o-r40-runtime-iFXFp1",
+  "cleanup": "local gateway and bridge child closed; unfinished job state retained when necessary; temporary OAuth records removed; no remote session control sent"
+}
