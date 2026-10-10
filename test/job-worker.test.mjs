@@ -259,3 +259,67 @@ test("current account ineligibility prevents chat send", async () => {
   assert.equal(sends, 0);
   assert.equal(posted.outcome, "rejected");
 });
+
+test("accepted chat receipts capture only bounded preflight model and usage", async () => {
+  let posted; let sends = 0;
+  const bridge = { async request(_method, route, body) {
+    if (route.endsWith("/claim")) return op("chat-usage", "account-a");
+    posted = body; return {};
+  } };
+  const baselineUsage = { aiGatewaySessionCostUsd: 0.125, promptCount: 4, budgetUsed: 1.5, maxBudget: 8,
+    fundingSource: "trial", sandboxTier: "small", userId: "private-user", credentialRef: "secret-ref",
+    branch: "private-branch", prompt: "private prompt", token: "never-return" };
+  const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id, {
+    sessionStatus: async () => ok(id, { status: { isOwner: true, canSendMessage: true, model: "gpt-6-luna",
+      sessionStatus: "idle", ...baselineUsage } }),
+    sendMessage: async () => { sends++; return ok(id); },
+  }), isAccountEligible: () => true, workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
+  worker.start(); await until(() => posted); await worker.stop();
+  assert.equal(sends, 1);
+  assert.equal(posted.outcome, "accepted");
+  assert.equal(posted.result.reportedModel, "gpt-6-luna");
+  assert.deepEqual(posted.result.usage, { reportedSessionCostUsd: 0.125, promptCount: 4, budgetUsed: 1.5,
+    maxBudget: 8, fundingSource: "trial", sandboxTier: "small" });
+  assert.doesNotMatch(JSON.stringify(posted.result), /private-user|secret-ref|private-branch|private prompt|never-return/);
+});
+
+test("observe_session captures latest usage while running without inventing absent fields", async () => {
+  const dispatchAt = Date.parse("2026-10-10T00:00:00Z") / 1_000;
+  const observation = pythonObservation("latest-usage", "account-a", dispatchAt);
+  let posted; let transcriptReads = 0;
+  const bridge = { async request(_method, route, body) {
+    if (route.endsWith("/claim")) return observation;
+    posted = body; return {};
+  } };
+  const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id, {
+    sessionStatus: async () => ok(id, { status: { sessionStatus: "running", model: "agent-model-v2",
+      aiGatewaySessionCostUsd: 0, promptCount: 0, budgetUsed: 0, maxBudget: 5,
+      fundingSource: "workspace", sandboxTier: "standard" } }),
+    sessionTranscript: async () => { transcriptReads++; return ok(id, { messages: [] }); },
+  }), isAccountEligible: () => true, workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
+  worker.start(); await until(() => posted); await worker.stop();
+  assert.equal(transcriptReads, 0);
+  assert.equal(posted.result.status, "running");
+  assert.equal(posted.result.reportedModel, "agent-model-v2");
+  assert.deepEqual(posted.result.usage, { reportedSessionCostUsd: 0, promptCount: 0, budgetUsed: 0,
+    maxBudget: 5, fundingSource: "workspace", sandboxTier: "standard" });
+});
+
+test("malformed usage and model metadata are omitted instead of defaulted or echoed", async () => {
+  const observation = pythonObservation("invalid-usage", "account-a", Date.parse("2026-10-10T00:00:00Z") / 1_000);
+  let posted;
+  const bridge = { async request(_method, route, body) {
+    if (route.endsWith("/claim")) return observation;
+    posted = body; return {};
+  } };
+  const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id, {
+    sessionStatus: async () => ok(id, { status: { sessionStatus: "running", model: { secret: "private-model" },
+      reportedSessionCostUsd: null, promptCount: -1, budgetUsed: "3", maxBudget: 0,
+      fundingSource: "f".repeat(65), sandboxTier: null, userId: "private-user", credentialRef: "secret-ref" } }),
+  }), isAccountEligible: () => true, workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
+  worker.start(); await until(() => posted); await worker.stop();
+  assert.equal(posted.outcome, "accepted");
+  assert.equal("reportedModel" in posted.result, false);
+  assert.equal("usage" in posted.result, false);
+  assert.doesNotMatch(JSON.stringify(posted.result), /private-model|private-user|secret-ref|fundingSource/);
+});
