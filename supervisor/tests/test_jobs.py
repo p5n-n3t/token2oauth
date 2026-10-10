@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import unittest
@@ -21,6 +22,11 @@ def assignment(assignment_id="job-1", key="key-1", tasks=None, *, accounts=None,
         "projectId": project, "eligibleAccountIds": accounts or ["account-a"], "maxWorkers": max_workers,
         "tasks": tasks or [task()],
     }
+
+
+def usage(cost=0.0, prompts=0, budget=0.0, maximum=1.0, funding="plan", tier="standard"):
+    return {"reportedSessionCostUsd": cost, "promptCount": prompts, "budgetUsed": budget,
+            "maxBudget": maximum, "fundingSource": funding, "sandboxTier": tier}
 
 
 class JobRegistryTests(unittest.TestCase):
@@ -131,6 +137,88 @@ class JobRegistryTests(unittest.TestCase):
             last_operation = db.execute("SELECT id FROM operations WHERE kind='observe_session' AND state='accepted' ORDER BY created_at DESC LIMIT 1").fetchone()["id"]
         self.registry.record_result(last_operation, final_result, now=20)
         self.assertEqual(self.registry.get_assignment("job-1")["revision"], 2)
+
+    def test_usage_delta_uses_durable_attempt_scoped_baseline_and_latest_receipt(self):
+        self.registry.submit(assignment(), now=1)
+        chat = self.registry.claim_operation("worker", now=2)
+        # A prior generation's usage receipt must never be folded into this attempt.
+        with self.registry.connection(write=True) as db:
+            db.execute("INSERT INTO operations(id,assignment,task_id,attempt_id,generation,account,kind,input,state,result,created_at,due_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       ("old-generation", "job-1", "task-1", "old-attempt", 0, "account-a", "chat_session",
+                        json.dumps({"sessionId": "session-account-a"}), "accepted",
+                        json.dumps({"outcome": "accepted", "result": {"reportedModel": "model-a", "usage": usage(9, 900)}}), 1, 1))
+        baseline = {"workerId": "worker", "outcome": "accepted", "result": {"reportedModel": "model-a", "usage": usage(.1, 10, .1)}}
+        self.registry.record_result(chat["operationId"], baseline, now=3)
+        observation = self.registry.claim_operation("worker", now=5)
+        pending = {"workerId": "worker", "outcome": "accepted", "result": {"status": "running", "sessionId": "session-account-a",
+                   "reportedModel": "model-a", "usage": usage(.14, 14, .14)}}
+        self.registry.record_result(observation["operationId"], pending, now=6)
+        latest = self.registry.claim_operation("worker", now=8)
+        final = {"workerId": "worker", "outcome": "accepted", "result": {"status": "complete", "assistantText": "DONE usage",
+                 "assistantAt": 7, "sessionId": "session-account-a", "reportedModel": "model-a", "usage": usage(.18, 20, .18)}}
+        self.registry.record_result(latest["operationId"], final, now=9)
+        snapshot = self.registry.get_assignment("job-1")["tasks"][0]
+        self.assertEqual(snapshot["usage"]["reportedSessionCostUsd"], .18)
+        self.assertEqual(snapshot["usage"]["reportedCostDeltaUsd"], .08)
+        self.assertEqual(snapshot["usage"]["promptCountDelta"], 10)
+        self.assertEqual(snapshot["usage"]["reportedModel"], "model-a")
+        self.assertEqual(snapshot["usage"]["observedAt"], 9)
+        self.assertEqual(snapshot["usage"]["source"], "lightsprint-session-status")
+        self.assertTrue(snapshot["usage"]["provisional"])
+        self.assertEqual(snapshot["usage"]["budgetUnit"], "unknown")
+        with self.registry.connection() as db:
+            stored = json.loads(db.execute("SELECT result FROM operations WHERE id=?", (latest["operationId"],)).fetchone()["result"])
+            self.assertEqual(stored["observedAt"], 9)
+        reopened = JobRegistry(self.db)
+        self.assertEqual(reopened.get_assignment("job-1")["tasks"][0]["usage"], snapshot["usage"])
+        self.assertTrue(reopened.record_result(latest["operationId"], final, now=99)["replayed"])
+        self.assertEqual(reopened.get_assignment("job-1")["tasks"][0]["usage"]["observedAt"], 9)
+
+    def test_usage_contract_rejects_arbitrary_nonfinite_and_invalid_counters(self):
+        self.registry.submit(assignment(), now=1)
+        chat = self.registry.claim_operation("worker", now=2)
+        valid = usage(0, 0, 0, 1)
+        invalid = [
+            {**valid, "extra": "not allowed"},
+            {key: value for key, value in valid.items() if key != "sandboxTier"},
+            {**valid, "reportedSessionCostUsd": -1},
+            {**valid, "reportedSessionCostUsd": float("nan")},
+            {**valid, "promptCount": True},
+            {**valid, "promptCount": -1},
+            {**valid, "maxBudget": 0},
+            {**valid, "fundingSource": "x" * 65},
+        ]
+        for item in invalid:
+            with self.subTest(item=item):
+                with self.assertRaises(ValueError):
+                    self.registry.record_result(chat["operationId"], {"workerId": "worker", "outcome": "accepted", "result": {"usage": item}}, now=3)
+        self.registry.record_result(chat["operationId"], {"workerId": "worker", "outcome": "accepted", "result": {"usage": None}}, now=3)
+        observation = self.registry.claim_operation("worker", now=5)
+        self.registry.record_result(observation["operationId"], {"workerId": "worker", "outcome": "accepted", "result": {
+            "status": "complete", "assistantText": "DONE", "assistantAt": 4, "sessionId": "session-account-a"}}, now=6)
+        self.assertNotIn("usage", self.registry.get_assignment("job-1")["tasks"][0])
+
+    def test_usage_rollbacks_and_model_or_session_mismatches_suppress_deltas(self):
+        def complete_with_usage(identifier, observed_usage, model, session="session-account-a"):
+            self.registry.submit(assignment(identifier, identifier + "-key", [task(identifier)]), now=1)
+            chat = self.registry.claim_operation("worker", now=2)
+            self.registry.record_result(chat["operationId"], {"workerId": "worker", "outcome": "accepted", "result": {
+                "reportedModel": "model-a", "usage": usage(.5, 20, .5)}}, now=3)
+            observe = self.registry.claim_operation("worker", now=5)
+            self.registry.record_result(observe["operationId"], {"workerId": "worker", "outcome": "accepted", "result": {
+                "status": "complete", "assistantText": "DONE", "assistantAt": 4, "sessionId": session,
+                "reportedModel": model, "usage": observed_usage}}, now=6)
+            return self.registry.get_assignment(identifier)["tasks"][0]
+
+        rolled_back = complete_with_usage("rollback", usage(.4, 25, .4), "model-a")
+        self.assertEqual(rolled_back["usage"]["reportedSessionCostUsd"], .4)
+        self.assertNotIn("reportedCostDeltaUsd", rolled_back["usage"])
+        self.assertEqual(rolled_back["usage"]["promptCountDelta"], 5)
+        changed_model = complete_with_usage("model-change", usage(.7, 30, .7), "model-b")
+        self.assertNotIn("reportedCostDeltaUsd", changed_model["usage"])
+        self.assertNotIn("promptCountDelta", changed_model["usage"])
+        wrong_session = complete_with_usage("session-change", usage(.8, 40, .8), "model-a", "other-session")
+        self.assertNotIn("usage", wrong_session)
 
     def test_scope_conflict_across_jobs_blocks_second_until_release(self):
         self.registry.submit(assignment(), now=1)
