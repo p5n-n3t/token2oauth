@@ -1,23 +1,24 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from snooze.jobs import JobRegistry, validate_assignment
 
 
-def task(task_id="task-1", *, account="account-a", depends=None, scope=None):
+def task(task_id="task-1", *, account="account-a", session_id=None, depends=None, scope=None):
     return {
         "taskId": task_id, "dependsOn": depends or [], "scopeKeys": [scope or f"path:src/{task_id}.txt"],
         "instructions": f"Do bounded work for {task_id}",
-        "execution": {"mode": "existing-session", "sessionId": f"session-{account}", "accountId": account},
+        "execution": {"mode": "existing-session", "sessionId": session_id or f"session-{account}", "accountId": account},
         "output": {"kind": "text", "maxBytes": 1024, "format": "plain", "expectedMarker": "DONE"},
     }
 
 
-def assignment(assignment_id="job-1", key="key-1", tasks=None, *, accounts=None, max_workers=3):
+def assignment(assignment_id="job-1", key="key-1", tasks=None, *, accounts=None, max_workers=3, project="project-a"):
     return {
         "schemaVersion": 1, "assignmentId": assignment_id, "idempotencyKey": key,
-        "projectId": "project-a", "eligibleAccountIds": accounts or ["account-a"], "maxWorkers": max_workers,
+        "projectId": project, "eligibleAccountIds": accounts or ["account-a"], "maxWorkers": max_workers,
         "tasks": tasks or [task()],
     }
 
@@ -29,10 +30,11 @@ class JobRegistryTests(unittest.TestCase):
         self.registry = JobRegistry(self.db)
         self.register("account-a")
 
-    def register(self, account, *, enabled=True, authorized=True, health="healthy", quota="available", sessions=None):
+    def register(self, account, *, enabled=True, authorized=True, health="healthy", quota="available", sessions=None, capacity=1):
         return self.registry.register_account({
             "accountId": account, "enabled": enabled, "authorized": authorized, "health": health,
             "quota": quota, "allowUnknownQuota": False,
+            "localCapacity": capacity,
             "registeredSessions": sessions or [{"id": f"session-{account}", "model": "unknown", "workspace": "workspace-a"}],
         })
 
@@ -174,6 +176,49 @@ class JobRegistryTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT state FROM operations WHERE id=?", (op["operationId"],)).fetchone()[0], "ambiguous")
         self.assertEqual(self.registry.get_assignment("job-1")["tasks"][0]["state"], "ambiguous")
 
+    def test_one_session_is_exclusive_across_accounts_projects_and_restart(self):
+        shared = [{"id": "shared-session", "model": "model-a", "workspace": "workspace-a"}]
+        self.register("account-a", sessions=shared, capacity=4)
+        self.register("account-b", sessions=shared, capacity=4)
+        self.registry.submit(assignment("job-a", "key-a", [task("a", account="account-a", session_id="shared-session")], project="project-a"), now=1)
+        self.registry.submit(assignment("job-b", "key-b", [task("b", account="account-b", session_id="shared-session")], accounts=["account-b"], project="project-b"), now=1)
+        self.registry.submit(assignment("job-c", "key-c", [task("c", account="account-a", session_id="shared-session")], project="project-c"), now=1)
+        # Both claims race through separate SQLite connections; only one may reserve the session.
+        barrier = threading.Barrier(4)
+        outcomes = []
+        def claim(worker):
+            barrier.wait()
+            outcomes.append((worker, self.registry.claim_operation(worker, lease_seconds=1, now=2)))
+        workers = [threading.Thread(target=claim, args=(f"worker-{n}",)) for n in range(3)]
+        for worker in workers: worker.start()
+        barrier.wait()
+        for worker in workers: worker.join(timeout=3)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        claimed = [(worker, item) for worker, item in outcomes if item]
+        self.assertEqual(len(claimed), 1)
+        # Expiration makes the remote result ambiguous; restart must retain the session lock.
+        self.assertIsNone(self.registry.claim_operation("worker-restart", lease_seconds=1, now=5))
+        restarted = JobRegistry(self.db)
+        self.assertIsNone(restarted.claim_operation("worker-restart", now=6))
+        with restarted.connection() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM job_tasks WHERE session_id='shared-session' AND state='ambiguous'").fetchone()[0], 1)
+
+    def test_completed_reservation_releases_session_and_busy_registration_is_immutable(self):
+        shared = [{"id": "shared-session", "model": "model-a", "workspace": "workspace-a"}]
+        self.register("account-a", sessions=shared, capacity=3)
+        self.register("account-b", sessions=shared, capacity=3)
+        self.registry.submit(assignment("job-a", "key-a", [task("a", account="account-a", session_id="shared-session")]), now=1)
+        first = self.registry.claim_operation("worker", now=2)
+        changed = [{"id": "shared-session", "model": "model-b", "workspace": "workspace-a"}]
+        with self.assertRaisesRegex(ValueError, "registered session while it is reserved"):
+            self.register("account-a", sessions=changed, capacity=3)
+        self.registry.record_result(first["operationId"], {"workerId": "worker", "outcome": "accepted"}, now=3)
+        observe = self.registry.claim_operation("worker", now=5)
+        self.registry.record_result(observe["operationId"], {"workerId": "worker", "outcome": "accepted", "result": {
+            "status": "complete", "assistantText": "DONE", "assistantAt": 4, "sessionId": "shared-session"}}, now=6)
+        self.registry.submit(assignment("job-b", "key-b", [task("b", account="account-b", session_id="shared-session")], accounts=["account-b"], project="project-b"), now=7)
+        self.assertEqual(self.registry.claim_operation("worker", now=8)["kind"], "chat_session")
+
     def test_pause_control_blocks_previously_queued_claim(self):
         self.registry.submit(assignment(), now=1)
         self.registry.set_control("pause_dispatch", True, expected_revision=1)
@@ -182,6 +227,7 @@ class JobRegistryTests(unittest.TestCase):
         self.assertEqual(self.registry.claim_operation("node-1", now=3)["kind"], "chat_session")
 
     def test_cancel_fences_generation_and_retains_remote_ownership(self):
+        self.register("account-b", sessions=[{"id": "session-account-a", "model": "unknown", "workspace": "workspace-a"}], capacity=4)
         self.registry.submit(assignment(), now=1)
         op = self.registry.claim_operation("node-1", now=2)
         self.registry.cancel_assignment("job-1", expected_revision=1, now=3)
@@ -192,6 +238,8 @@ class JobRegistryTests(unittest.TestCase):
         self.assertEqual((row["state"], row["generation"], row["released_at"]), ("cancel_pending", 2, None))
         self.assertEqual(operation_state, "ambiguous")
         self.assertIsNone(attempt["released_at"])
+        self.registry.submit(assignment("job-b", "key-b", [task("next", account="account-b", session_id="session-account-a")], accounts=["account-b"], project="project-b"), now=4)
+        self.assertIsNone(self.registry.claim_operation("node-2", now=5))
 
     def test_private_results_and_owner_filtering(self):
         body = assignment()
