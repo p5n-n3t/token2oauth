@@ -153,3 +153,35 @@ test("Python assignment receipts normalize into visible jobs without fabricating
   assert.match(html, /No provider groups are available/);
   assert.doesNotMatch(html, /snapshot supplied|no actions are implied|unknown denominator/i);
 });
+
+test("reported task and account usage stays provisional, sourced, and unknown when absent", () => {
+  const html = renderSupervisorDashboard(normalizeSupervisorSnapshot({
+    providers: [{ id: "p", label: "LightSprint", status: "available", accounts: [
+      { id: "acct-known", label: "Known", status: "healthy", usage: { reportedCostDeltaUsd: 0.125, coveredTaskGenerations: 2, totalTaskGenerations: 3, observedAt: 1791000000, source: "lightsprint-session-status", provisional: true } },
+      { id: "acct-unknown", label: "Unknown", status: "healthy" },
+    ] }],
+    workers: [{ id: "session-a", status: "eligible", model: "gpt-6-luna", usage: { reportedSessionCostUsd: 0.5, reportedCostDeltaUsd: 0.125, promptCountDelta: 2, budgetUsed: 4, maxBudget: 10, fundingSource: "shared", sandboxTier: "standard", observedAt: 1791000000, source: "lightsprint-session-status", provisional: true, budgetUnit: "unknown" } }],
+  }));
+  assert.match(html, /Reported USD increase: \$0\.1250 USD · provisional/);
+  assert.match(html, /2 of 3 task generations with reported cost/);
+  assert.match(html, /Task increase.*\$0\.1250 USD/);
+  assert.match(html, /Reported session total:.*\$0\.5000 USD/);
+  assert.match(html, /Provider session budget \(unit not reported\): 4 \/ 10/);
+  assert.match(html, /Remaining quota is not reported; workspace billing may be shared/);
+  assert.match(html, /LightSprint session status/);
+  assert.match(html, /Model:.*gpt-6-luna/);
+  assert.doesNotMatch(html, /credits? remaining|credit balance|\$0\.0000/);
+  assert.equal((html.match(/role="meter"/g) || []).length, 1);
+});
+
+test("malformed and secret-bearing usage never becomes fabricated zero or active markup", () => {
+  const html = renderSupervisorDashboard(normalizeSupervisorSnapshot({
+    providers: [{ id: "p", label: "P", status: "available", accounts: [{ id: "a", label: "A", status: "ready", usage: { reportedCostDeltaUsd: -1, coveredTaskGenerations: 1, totalTaskGenerations: 1 } }] }],
+    workers: [{ id: "s", status: "eligible", usage: { reportedCostDeltaUsd: -1, budgetUsed: 4, maxBudget: 0, fundingSource: '<img src=x> Bearer abc123.def4567890123456' } }],
+  }));
+  assert.match(html, /Usage not reported|No reported increase/);
+  assert.match(html, /Provider session budget: 4 \/ maximum not reported/);
+  assert.doesNotMatch(html, /\$0\.0000|aria-valuenow="4"|<img src=x|abc123\.def4567890123456/);
+  assert.match(html, /&lt;img src=x&gt;/);
+  assert.match(html, /\[REDACTED\]/);
+});

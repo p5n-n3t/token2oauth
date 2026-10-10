@@ -8,9 +8,10 @@ import { JobInputError, validateJobToolArguments, type JobTaskInput, type JobToo
 import { LightSprintJobsAdapter } from "./providers/lightsprint-jobs.js";
 import type { StateStore } from "./store.js";
 import type { UpstreamAccount } from "./types.js";
+import { redactString } from "./telemetry.js";
 import { SupervisorBridge, type SupervisorBridgeOptions } from "./supervisor-bridge.js";
 import type { SupervisorBackend, SupervisorCaller } from "./supervisor-api.js";
-import type { SupervisorEvent, SupervisorJob, SupervisorSnapshot, SupervisorTask, SupervisorWorker } from "./supervisor-ui.js";
+import type { SupervisorAccountUsage, SupervisorEvent, SupervisorJob, SupervisorSnapshot, SupervisorTask, SupervisorUsage, SupervisorWorker } from "./supervisor-ui.js";
 
 const MODEL = "gpt-6-luna";
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -36,6 +37,23 @@ export interface SupervisorRuntimeOptions {
 }
 
 function object(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function usageProjection(value: unknown): SupervisorUsage | undefined {
+  if (!object(value)) return undefined;
+  const nonnegative = (key: string) => typeof value[key] === "number" && Number.isFinite(value[key]) && Number(value[key]) >= 0 ? Number(value[key]) : undefined;
+  const text = (key: string) => typeof value[key] === "string" && (value[key] as string).length <= 64 ? redactString(value[key] as string, 64) : undefined;
+  const usage: SupervisorUsage = {
+    reportedSessionCostUsd: nonnegative("reportedSessionCostUsd"), reportedCostDeltaUsd: nonnegative("reportedCostDeltaUsd"),
+    promptCountDelta: (() => { const n = nonnegative("promptCountDelta"); return n !== undefined && Number.isInteger(n) ? n : undefined; })(),
+    budgetUsed: nonnegative("budgetUsed"),
+    maxBudget: (() => { const n = value.maxBudget; return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : undefined; })(),
+    fundingSource: text("fundingSource"), sandboxTier: text("sandboxTier"),
+    observedAt: typeof value.observedAt === "number" && Number.isFinite(value.observedAt) ? value.observedAt : typeof value.observedAt === "string" && Number.isFinite(Date.parse(value.observedAt)) ? value.observedAt : undefined,
+    source: value.source === "lightsprint-session-status" ? value.source : undefined,
+    provisional: typeof value.provisional === "boolean" ? value.provisional : undefined,
+    budgetUnit: value.budgetUnit === "unknown" ? "unknown" : undefined,
+  };
+  return Object.values(usage).some((item) => item !== undefined) ? usage : undefined;
+}
 function safeId(value: unknown): value is string { return typeof value === "string" && ID.test(value); }
 function assertKeys(value: Record<string, unknown>, keys: string[], where: string): void {
   if (Object.keys(value).some((key) => !keys.includes(key))) throw new Error(`Invalid supervisor config fields: ${where}`);
@@ -301,18 +319,38 @@ export class SupervisorRuntime implements SupervisorBackend {
         const taskId = typeof task.taskId === "string" ? task.taskId : "unknown";
         const sessionId = typeof task.sessionId === "string" ? task.sessionId : undefined;
         const session = sessionId ? sessionById.get(sessionId) : undefined;
+        const usage = usageProjection(task.usage);
+        const generation = Number.isInteger(task.generation) && Number(task.generation) >= 0 ? Number(task.generation) : undefined;
         tasks.push({ id: `${assignmentId}:${taskId}`, label: taskId, status: typeof task.state === "string" ? task.state : "unknown",
-          ...(session ? { workspace: session.workspaceId, worker: session.sessionId } : {}) });
+          ...(session ? { workspace: session.workspaceId, worker: session.sessionId } : {}),
+          ...(typeof task.selectedAccountId === "string" ? { accountId: task.selectedAccountId } : {}),
+          ...(typeof task.modelReported === "string" ? { reportedModel: redactString(task.modelReported, 64) } : {}),
+          ...(generation !== undefined ? { generation } : {}), ...(usage ? { usage } : {}) });
       }
       const accounts = [...new Set(taskRows.flatMap((task) => typeof task.selectedAccountId === "string" ? [task.selectedAccountId] : []))];
       return { id: assignmentId, label: `${taskRows.length} task${taskRows.length === 1 ? "" : "s"}`, status: typeof assignment.state === "string" ? assignment.state : "unknown",
         provider: "LightSprint", ...(accounts.length ? { account: accounts.join(", ") } : {}), dependencies };
     });
     const accountIds = [...new Set(project.accountIds)];
+    const accountUsage = (accountId: string): SupervisorAccountUsage | undefined => {
+      const generations = new Map<string, SupervisorTask>();
+      for (const task of tasks) if (task.accountId === accountId) generations.set(`${task.id}:${task.generation ?? "unknown"}`, task);
+      if (!generations.size) return undefined;
+      const rows = [...generations.values()];
+      const reported = rows.filter((task) => task.usage?.reportedCostDeltaUsd !== undefined);
+      const latest = reported.map((task) => task.usage!).sort((a, b) => Number(b.observedAt ?? 0) - Number(a.observedAt ?? 0))[0];
+      return { totalTaskGenerations: rows.length, coveredTaskGenerations: reported.length,
+        ...(reported.length ? { reportedCostDeltaUsd: reported.reduce((sum, task) => sum + task.usage!.reportedCostDeltaUsd!, 0) } : {}),
+        ...(latest?.observedAt !== undefined ? { observedAt: latest.observedAt } : {}),
+        ...(latest?.source ? { source: latest.source } : {}), ...(reported.some((task) => task.usage?.provisional === true) ? { provisional: true } : {}) };
+    };
     const workers: SupervisorWorker[] = project.registeredSessions.map((session) => {
       const signal = accountSignal(state.accounts.find((account) => account.id === session.accountId), nativeTarget);
       const eligible = signal.enabled && signal.authorized && signal.health === "healthy" && (signal.quota === "available" || signal.quota === "unknown" && this.config.allowUnknownQuota);
-      return { id: session.sessionId, workspace: session.workspaceId, status: eligible ? "eligible" : "unavailable" };
+      const observations = tasks.filter((task) => task.worker === session.sessionId && task.usage).sort((a, b) => Number(b.usage?.observedAt ?? 0) - Number(a.usage?.observedAt ?? 0));
+      const currentTask = observations.find((task) => !/complete|failed|cancelled|rejected/i.test(task.status)) ?? observations[0];
+      return { id: session.sessionId, workspace: session.workspaceId, status: eligible ? "eligible" : "unavailable",
+        ...(currentTask?.usage ? { usage: currentTask.usage, ...(currentTask.reportedModel ? { model: currentTask.reportedModel } : {}), taskId: currentTask.id } : {}) };
     });
     const providers = [{ id: "lightsprint", label: "LightSprint", status: accountIds.some((accountId) => {
       const signal = accountSignal(state.accounts.find((account) => account.id === accountId), nativeTarget);
@@ -327,7 +365,8 @@ export class SupervisorRuntime implements SupervisorBackend {
         group.workers.push(workers.find((worker) => worker.id === session.sessionId)!);
         return groups;
       }, [] as Array<{ id: string; workers: SupervisorWorker[] }>);
-      return { id: accountId, label: account?.label || accountId, status, workspaces };
+      const usage = accountUsage(accountId);
+      return { id: accountId, label: account?.label || accountId, status, workspaces, ...(usage ? { usage } : {}) };
     }) }];
     const assignmentIds = new Set(assignments.map((assignment) => String(assignment.assignmentId)));
     const eventPage = parseJson(await this.bridge.request("GET", "/admin/api/v1/events?after=0&limit=50"));
