@@ -13,6 +13,7 @@ import urllib.parse
 from pathlib import Path
 
 from .jobs import JobRegistry
+from .job_inbox import InboxUnavailable, JobInbox
 
 MAX_BODY = 1024 * 1024
 
@@ -144,6 +145,45 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if self.command == "POST" and route == "/v1/accounts":
                 self._reply(200, registry.register_account(self._body()))
                 return
+            if self.command == "GET" and route == "/v1/inbox":
+                if set(query) - {"projectId", "after", "limit"}:
+                    raise ValueError("Invalid inbox query")
+                if any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Invalid inbox query")
+                project = query.get("projectId", [None])[0]
+                after = query.get("after", ["0"])[0]
+                raw_limit = query.get("limit", ["50"])[0]
+                if not raw_limit.isdecimal():
+                    raise ValueError("Invalid inbox limit")
+                limit = int(raw_limit)
+                owner, client = self._owner_context()
+                if not owner or not client:
+                    raise PermissionError("owner_context_required")
+                try:
+                    value = JobInbox(registry).read(project=project, owner=owner, client=client,
+                                                    after=after, limit=limit)
+                except InboxUnavailable:
+                    self._reply(501, {"error": "event_feed_unavailable"})
+                else:
+                    self._reply(200, value)
+                return
+            match = re.fullmatch(r"/v1/inbox/([^/]+)/ack", route)
+            if self.command == "POST" and match:
+                body = self._body()
+                if set(body) != {"projectId"} or not isinstance(body.get("projectId"), str):
+                    raise ValueError("projectId is required")
+                owner, client = self._owner_context()
+                if not owner or not client:
+                    raise PermissionError("owner_context_required")
+                try:
+                    value = JobInbox(registry).acknowledge(
+                        event_id=urllib.parse.unquote(match.group(1)), project=body["projectId"],
+                        owner=owner, client=client)
+                except InboxUnavailable:
+                    self._reply(501, {"error": "event_feed_unavailable"})
+                else:
+                    self._reply(200, value)
+                return
             if self.command == "GET" and route == "/admin/api/v1/assignments":
                 project = query.get("projectId", [None])[0]
                 if not project:
@@ -207,6 +247,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             self._reply(404, {"error": "not_found"})
         except PermissionError as exc:
             self._reply(403, {"error": str(exc)[:80]})
+        except InboxUnavailable:
+            self._reply(501, {"error": "event_feed_unavailable"})
         except RuntimeError as exc:
             self._reply(409, {"error": str(exc)[:160]})
         except (ValueError, TypeError, OverflowError) as exc:
