@@ -1,0 +1,7 @@
+# MCP protocol quota and authentication failures
+
+Streamed `tools/call` responses can carry an MCP tool error inside an HTTP 200 response. The proxy now inspects the existing bounded response prefix as it passes through. It recognizes only an explicit `HTTP <status>:` value inside a JSON-RPC `error.message` or an MCP `result` marked `isError: true` with text content. A status must also appear in the configured authentication or quota status lists before it changes account health.
+
+Recognized authentication and quota failures update the credential pool through its existing failure interface after the response stream is observed. The original response remains byte-for-byte unchanged, and the current operation is never replayed or routed to another credential. Session and task ownership remain pinned. Telemetry records the protocol failure class without storing provider error text, prompts, or credentials. Other MCP tool errors are recorded as `upstream-protocol-error`; they do not cause quota or authentication cooldowns. Unrecognized text and failures outside the bounded prefix do not change account health.
+
+The observer retains at most 1 MiB for parsing and copies only the observed portion of each chunk; all stream bytes continue through the existing pipeline. Account success accounting for observed `tools/call` responses is finalized when the stream completes, allowing a single request to be counted as either success or protocol failure.
