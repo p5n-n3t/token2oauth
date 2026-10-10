@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -22,6 +23,7 @@ MAX_DEPENDENCIES = 8
 MAX_PAGE = 200
 MUTATING_KINDS = {"create_task", "patch_task", "launch_task", "chat_session", "cancel_session"}
 OPERATION_KINDS = {"observe_session", "chat_session", "cancel_session"}
+USAGE_KEYS = {"reportedSessionCostUsd", "promptCount", "budgetUsed", "maxBudget", "fundingSource", "sandboxTier"}
 ASSIGNMENT_KEYS = {"schemaVersion", "assignmentId", "idempotencyKey", "projectId", "eligibleAccountIds", "tasks"}
 ASSIGNMENT_OPTIONAL_KEYS = {"ownerPrincipalId", "clientId", "maxWorkers"}
 TASK_KEYS = {"taskId", "dependsOn", "scopeKeys", "instructions", "execution", "output"}
@@ -48,6 +50,23 @@ def _closed_object(value, keys, name):
 def _allowed_object(value, required, optional, name):
     if not isinstance(value, dict) or not required <= set(value) or set(value) - required - optional:
         raise ValueError(f"{name} has unsupported or missing fields")
+
+
+def _validate_usage(value):
+    _closed_object(value, USAGE_KEYS, "usage")
+    for field, minimum in (("reportedSessionCostUsd", 0), ("budgetUsed", 0), ("maxBudget", 0)):
+        number = value[field]
+        try:
+            finite = type(number) in {int, float} and math.isfinite(number)
+        except (OverflowError, TypeError):
+            finite = False
+        if not finite or number < minimum or (field == "maxBudget" and number == 0):
+            raise ValueError(f"Invalid usage {field}")
+    if type(value["promptCount"]) is not int or value["promptCount"] < 0:
+        raise ValueError("Invalid usage promptCount")
+    for field in ("fundingSource", "sandboxTier"):
+        _text(value[field], f"usage.{field}", 64)
+    return value
 
 
 def _validate_scope(value):
@@ -433,6 +452,62 @@ class JobRegistry:
             return True
         return row["owner_principal"] == owner_principal_id and row["client_id"] == client_id
 
+    @staticmethod
+    def _task_usage(db, task):
+        if not task["attempt_id"] or not task["selected_account"] or not task["session_id"]:
+            return None
+        rows = db.execute(
+            "SELECT rowid AS sequence,kind,input,result,created_at FROM operations WHERE assignment=? AND task_id=? AND attempt_id=? "
+            "AND generation=? AND account=? AND kind IN ('chat_session','observe_session') AND state='accepted' "
+            "AND result IS NOT NULL ORDER BY created_at,rowid",
+            (task["assignment"], task["task_id"], task["attempt_id"], task["generation"], task["selected_account"]),
+        ).fetchall()
+        baseline = latest = None
+        for operation in rows:
+            try:
+                request = json.loads(operation["input"])
+                envelope = json.loads(operation["result"])
+                receipt = envelope.get("result")
+                if request.get("sessionId") != task["session_id"] or not isinstance(receipt, dict):
+                    continue
+                receipt_session = receipt.get("sessionId")
+                if receipt_session is not None and receipt_session != task["session_id"]:
+                    continue
+                usage = receipt.get("usage")
+                if usage is not None:
+                    try:
+                        usage = dict(_validate_usage(usage))
+                    except (TypeError, ValueError):
+                        usage = None  # Older persisted or malformed usage is unavailable, never zero.
+                observed_at = envelope.get("observedAt", operation["created_at"])
+                if not (isinstance(observed_at, (int, float)) and type(observed_at) is not bool and math.isfinite(observed_at)):
+                    observed_at = operation["created_at"]
+                item = {"usage": usage, "model": receipt.get("reportedModel"),
+                        "observedAt": observed_at, "sequence": operation["sequence"]}
+                if operation["kind"] == "chat_session" and (baseline is None or
+                        (item["observedAt"], item["sequence"]) < (baseline["observedAt"], baseline["sequence"])):
+                    baseline = item
+                elif operation["kind"] == "observe_session" and (latest is None or
+                        (item["observedAt"], item["sequence"]) > (latest["observedAt"], latest["sequence"])):
+                    latest = item
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        if latest is None or latest["usage"] is None:
+            return None
+        current = latest["usage"]
+        result = {key: current[key] for key in USAGE_KEYS}
+        if isinstance(latest["model"], str):
+            result["reportedModel"] = latest["model"]
+        result["observedAt"] = latest["observedAt"]
+        result.update({"source": "lightsprint-session-status", "provisional": True, "budgetUnit": "unknown"})
+        if baseline is not None and baseline["usage"] is not None and isinstance(baseline["model"], str) and baseline["model"] == latest["model"]:
+            before = baseline["usage"]
+            if current["reportedSessionCostUsd"] >= before["reportedSessionCostUsd"]:
+                result["reportedCostDeltaUsd"] = round(current["reportedSessionCostUsd"] - before["reportedSessionCostUsd"], 12)
+            if current["promptCount"] >= before["promptCount"]:
+                result["promptCountDelta"] = current["promptCount"] - before["promptCount"]
+        return result
+
     def get_assignment(self, assignment_id, owner_principal_id=None, client_id=None):
         with self.connection() as db:
             row = db.execute("SELECT * FROM assignments WHERE id=?", (assignment_id,)).fetchone()
@@ -441,12 +516,16 @@ class JobRegistry:
             tasks = []
             for task in db.execute("SELECT * FROM job_tasks WHERE assignment=? ORDER BY rowid", (assignment_id,)):
                 spec = json.loads(task["body"])
-                tasks.append({"taskId": task["task_id"], "state": task["state"], "dependsOn": spec["dependsOn"],
+                dto = {"taskId": task["task_id"], "state": task["state"], "dependsOn": spec["dependsOn"],
                               "attempt": task["attempt_id"], "generation": task["generation"],
                               "selectedAccountId": task["selected_account"], "providerTaskId": task["provider_task_id"],
                               "sessionId": task["session_id"], "dispatchAt": task["dispatch_at"], "releasedAt": task["released_at"],
                               "modelRequested": "unknown/unsupported", "modelReported": task["reported_model"],
-                              "providerStatus": task["provider_status"], "quota": "unknown", "capacity": "unknown"})
+                              "providerStatus": task["provider_status"], "quota": "unknown", "capacity": "unknown"}
+                usage = self._task_usage(db, task)
+                if usage is not None:
+                    dto["usage"] = usage
+                tasks.append(dto)
             return {"schemaVersion": 1, **self._receipt(row), "eligibleAccountIds": json.loads(row["eligible"]), "tasks": tasks}
 
     def list_assignments(self, project, *, offset=0, limit=50, owner_principal_id=None, client_id=None):
@@ -690,10 +769,14 @@ class JobRegistry:
         result = body.get("result", {})
         if not isinstance(result, dict) or len(json.dumps(result, separators=(",", ":")).encode()) > 32768:
             raise ValueError("Result must be a bounded object")
-        allowed_result = {"providerTaskId", "sessionId", "branchName", "commitRef", "artifactRefs", "pullRequest", "reportedModel", "status", "assistantText", "assistantAt"}
+        allowed_result = {"providerTaskId", "sessionId", "branchName", "commitRef", "artifactRefs", "pullRequest", "reportedModel", "status", "assistantText", "assistantAt", "usage"}
         if set(result) - allowed_result:
             raise ValueError("Unsupported operation result fields")
         for key, value in result.items():
+            if key == "usage":
+                if value is not None:
+                    _validate_usage(value)
+                continue
             if isinstance(value, str):
                 _text(value, key, 2048)
                 if re.search(r"(?i)bearer\s+\S+|lsat_[A-Za-z0-9_-]+", value):
@@ -712,13 +795,19 @@ class JobRegistry:
         error_class = body.get("errorClass")
         if error_class is not None and (not isinstance(error_class, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", error_class)):
             raise ValueError("errorClass must be a safe class name")
-        encoded = json.dumps({"outcome": outcome, "result": result, "errorClass": error_class}, sort_keys=True, separators=(",", ":"))
         when = time.time() if now is None else now
+        comparable = {"outcome": outcome, "result": result, "errorClass": error_class}
+        encoded = json.dumps({**comparable, "observedAt": when}, sort_keys=True, separators=(",", ":"))
         with self.connection(write=True) as db:
             op = db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
             if not op: raise KeyError("Operation not found")
             if op["state"] in {"accepted", "rejected", "ambiguous"}:
-                if op["result"] == encoded: return {"operationId": operation_id, "state": op["state"], "replayed": True}
+                try:
+                    stored = json.loads(op["result"] or "{}")
+                    stored.pop("observedAt", None)
+                except (TypeError, json.JSONDecodeError):
+                    stored = None
+                if stored == comparable: return {"operationId": operation_id, "state": op["state"], "replayed": True}
                 raise RuntimeError("Conflicting operation result")
             if op["state"] != "claimed" or op["worker"] != worker:
                 raise RuntimeError("Operation is not owned by this worker")
