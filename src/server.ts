@@ -1,4 +1,5 @@
 import express from "express";
+import { fileURLToPath } from "node:url";
 import { AdminSessions } from "./admin-session.js";
 import { OAuthService } from "./oauth.js";
 import { CredentialPool } from "./pool.js";
@@ -6,12 +7,15 @@ import { McpProxy } from "./proxy.js";
 import { StateStore, normalizeBasePath } from "./store.js";
 import { TelemetryRecorder } from "./telemetry.js";
 import { createSupervisorAdminRouter, SupervisorApi, type SupervisorBackend } from "./supervisor-api.js";
+import { createSupervisorRuntime } from "./supervisor-runtime.js";
 
 export interface ServerOptions {
   host?: string;
   port?: number;
   /** Inject the durable bridge supplied by the supervisor integration. */
   supervisorBackend?: SupervisorBackend;
+  /** Opt-in path to a private supervisor runtime JSON policy file. */
+  supervisorConfigPath?: string;
 }
 
 export async function buildApp(store = new StateStore(), options: Pick<ServerOptions, "supervisorBackend"> = {}) {
@@ -64,7 +68,13 @@ export async function buildApp(store = new StateStore(), options: Pick<ServerOpt
 export async function startServer(options: ServerOptions = {}) {
   const store = new StateStore();
   const init = await store.init();
-  const { app } = await buildApp(store, options);
+  const runtime = options.supervisorConfigPath ? await createSupervisorRuntime({
+    configPath: options.supervisorConfigPath,
+    configDir: store.dir,
+    supervisorCwd: fileURLToPath(new URL("../supervisor/", import.meta.url)),
+    store,
+  }) : undefined;
+  const { app } = await buildApp(store, { supervisorBackend: options.supervisorBackend ?? runtime });
   const host = options.host || process.env.TOKEN2OAUTH_HOST || "127.0.0.1";
   const port = options.port || Number(process.env.TOKEN2OAUTH_PORT || 2030);
 
@@ -88,5 +98,7 @@ export async function startServer(options: ServerOptions = {}) {
     });
   });
 
-  return { server, store, init };
+  if (runtime) server.once("close", () => { void runtime.close(); });
+
+  return { server, store, init, supervisor: runtime };
 }
