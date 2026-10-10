@@ -8,3 +8,8 @@ coverage/
 .token2oauth/
 *.key
 *.pem
+
+# Embedded Python supervisor development artifacts
+__pycache__/
+*.py[cod]
+supervisor/.venv/
