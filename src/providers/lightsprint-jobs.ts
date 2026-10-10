@@ -42,7 +42,11 @@ export interface LightSprintJobsOptions {
 }
 
 const MAX_MCP_RESPONSE_BYTES = 1_048_576;
-const MAX_TRANSCRIPT_CHARS = 250_000;
+const MAX_TRANSCRIPT_PROJECTION_BYTES = 256 * 1024;
+const MAX_TRANSCRIPT_PREVIEW_BYTES = 8 * 1024;
+const MAX_PROJECTED_MESSAGE_BYTES = 64 * 1024;
+const MAX_MESSAGE_CONTENT_BYTES = 48 * 1024;
+const MAX_RECENT_TRANSCRIPT_MESSAGES = 100;
 const MAX_ID_LENGTH = 128;
 const MAX_TITLE_LENGTH = 500;
 const MAX_INSTRUCTIONS_LENGTH = 20_000;
@@ -217,10 +221,190 @@ function findField(value: unknown, names: string[], depth = 0): unknown {
   }
   return undefined;
 }
+function boundedPreview(value: unknown): string {
+  const chunks: string[] = [];
+  const seen = new WeakSet<object>();
+  let used = 0;
+  let truncated = false;
+  const append = (text: string) => {
+    if (truncated) return;
+    let prefix = "";
+    for (const char of text) {
+      const size = Buffer.byteLength(char, "utf8");
+      if (used + size > MAX_TRANSCRIPT_PREVIEW_BYTES) { truncated = true; break; }
+      prefix += char;
+      used += size;
+    }
+    if (prefix) chunks.push(prefix);
+  };
+  const visit = (item: unknown, depth: number): void => {
+    if (truncated) return;
+    if (item === null || typeof item === "boolean" || typeof item === "number") {
+      append(JSON.stringify(item));
+      return;
+    }
+    if (typeof item === "string") {
+      const sample = item.slice(0, 256);
+      append(JSON.stringify(sample));
+      if (sample.length < item.length) truncated = true;
+      return;
+    }
+    if (typeof item !== "object" || depth >= 4 || seen.has(item)) { append("[omitted]"); return; }
+    seen.add(item);
+    if (Array.isArray(item)) {
+      append("[");
+      for (const entry of item.slice(0, 20)) { visit(entry, depth + 1); append(","); }
+      if (item.length > 20) truncated = true;
+      append("]");
+      return;
+    }
+    append("{");
+    let count = 0;
+    for (const key in item) {
+      if (!Object.hasOwn(item, key)) continue;
+      if (count >= 20) { truncated = true; break; }
+      count += 1;
+      append(JSON.stringify(key.slice(0, 80)) + ":");
+      visit((item as Record<string, unknown>)[key], depth + 1);
+      append(",");
+      if (truncated) break;
+    }
+    append("}");
+  };
+  visit(value, 0);
+  if (truncated) {
+    const marker = "[preview truncated]";
+    while (chunks.length && used + Buffer.byteLength(marker) > MAX_TRANSCRIPT_PREVIEW_BYTES) {
+      const last = chunks.pop();
+      if (last) used -= Buffer.byteLength(last);
+    }
+    chunks.push(marker);
+  }
+  return chunks.join("");
+}
+
+function projectMessage(source: unknown): { message: Record<string, unknown>; contentComplete: boolean; toolPayloadOmitted: boolean } {
+  const input = record(source) || {};
+  const message: Record<string, unknown> = {};
+  let complete = true;
+  const role = input.role;
+  if (typeof role === "string" && role.length <= 64) message.role = role;
+  else { message.role = "unknown"; complete = false; }
+  for (const key of ["id", "timestamp", "createdAt", "created_at", "time", "date"]) {
+    const value = input[key];
+    if (typeof value === "string" && Buffer.byteLength(value, "utf8") <= 128) message[key] = value;
+    else if (typeof value === "number" && Number.isFinite(value)) message[key] = value;
+    else if (value !== undefined) complete = false;
+  }
+  const toolPayloadOmitted = message.role === "tool" || (typeof message.role === "string" && message.role.startsWith("tool:"));
+  if (toolPayloadOmitted) {
+    message.contentOmitted = "tool_payload";
+    complete = false;
+  } else {
+    const content = input.content;
+    let projected: unknown;
+    let canPreserve = true;
+    let contentBytes = 0;
+    if (typeof content === "string") {
+      contentBytes = Buffer.byteLength(content, "utf8");
+      if (contentBytes <= MAX_MESSAGE_CONTENT_BYTES) projected = content;
+      else canPreserve = false;
+    } else if (Array.isArray(content) && content.length <= 64) {
+      const blocks: unknown[] = [];
+      for (const block of content) {
+        if (typeof block === "string") {
+          contentBytes += Buffer.byteLength(block, "utf8");
+          blocks.push(block);
+        } else {
+          const part = record(block);
+          if (!part || part.type !== "text" || typeof part.text !== "string") { canPreserve = false; break; }
+          contentBytes += Buffer.byteLength(part.text, "utf8");
+          blocks.push({ type: "text", text: part.text });
+        }
+        if (contentBytes > MAX_MESSAGE_CONTENT_BYTES) { canPreserve = false; break; }
+      }
+      if (canPreserve) projected = blocks;
+    } else {
+      canPreserve = false;
+    }
+    if (canPreserve) {
+      message.content = projected;
+    } else {
+      message.contentOmitted = contentBytes > MAX_MESSAGE_CONTENT_BYTES ? "oversized" : "unsupported_content_shape";
+      complete = false;
+    }
+  }
+  message.complete = complete;
+  if (Buffer.byteLength(JSON.stringify(message), "utf8") > MAX_PROJECTED_MESSAGE_BYTES) {
+    // Do not keep a partial assistant marker if the complete message exceeds its per-message bound.
+    delete message.content;
+    message.contentOmitted = "oversized";
+    message.complete = false;
+    complete = false;
+  }
+  return { message, contentComplete: complete, toolPayloadOmitted };
+}
+
+/** Recent-message view with a stable latest-assistant pointer; never serializes the source transcript wholesale. */
 function boundedTranscript(value: unknown): unknown {
-  const text = JSON.stringify(value);
-  if (text.length <= MAX_TRANSCRIPT_CHARS) return value;
-  return { truncated: true, preview: text.slice(0, MAX_TRANSCRIPT_CHARS) };
+  const transcript = record(value);
+  const messages = transcript?.messages;
+  if (!Array.isArray(messages)) {
+    return {
+      shape: "unknown",
+      truncated: true,
+      incomplete: true,
+      latestAssistantComplete: false,
+      preview: boundedPreview(value),
+    };
+  }
+
+  let latestAssistantSourceIndex = -1;
+  let omittedToolContentCount = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const role = record(messages[index])?.role;
+    if (role === "assistant" && latestAssistantSourceIndex < 0) latestAssistantSourceIndex = index;
+    if (role === "tool" || (typeof role === "string" && role.startsWith("tool:"))) omittedToolContentCount += 1;
+  }
+
+  const selected: Array<{ sourceIndex: number; message: Record<string, unknown>; contentComplete: boolean; toolPayloadOmitted: boolean }> = [];
+  let usedBytes = 1024; // Reserve stable projection metadata and JSON punctuation.
+  const add = (sourceIndex: number) => {
+    const projection = projectMessage(messages[sourceIndex]);
+    const bytes = Buffer.byteLength(JSON.stringify(projection.message), "utf8");
+    if (selected.length >= MAX_RECENT_TRANSCRIPT_MESSAGES || usedBytes + bytes + 2 > MAX_TRANSCRIPT_PROJECTION_BYTES) return false;
+    selected.push({ sourceIndex, ...projection });
+    usedBytes += bytes + 2;
+    return true;
+  };
+
+  if (latestAssistantSourceIndex >= 0) add(latestAssistantSourceIndex);
+  for (let index = messages.length - 1; index >= 0 && selected.length < MAX_RECENT_TRANSCRIPT_MESSAGES; index -= 1) {
+    if (index === latestAssistantSourceIndex) continue;
+    if (!add(index)) break;
+  }
+  selected.sort((a, b) => a.sourceIndex - b.sourceIndex);
+  const latestAssistantIndex = selected.findIndex((entry) => entry.sourceIndex === latestAssistantSourceIndex);
+  const latestAssistantComplete = latestAssistantIndex >= 0 && selected[latestAssistantIndex].contentComplete;
+  const omittedMessageCount = messages.length - selected.length;
+  const omittedContentCount = selected.filter((entry) => entry.message.contentOmitted !== undefined).length;
+  const result = {
+    shape: "messages",
+    messages: selected.map((entry) => entry.message),
+    sourceMessageCount: messages.length,
+    omittedMessageCount,
+    omittedContentCount,
+    omittedToolContentCount,
+    truncated: omittedMessageCount > 0 || omittedContentCount > 0,
+    incomplete: omittedMessageCount > 0 || omittedContentCount > 0 || !latestAssistantComplete,
+    latestAssistantIndex: latestAssistantIndex >= 0 ? latestAssistantIndex : null,
+    latestAssistantComplete,
+  };
+  // This final serialization is over a bounded projection, never the full history.
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_TRANSCRIPT_PROJECTION_BYTES) {
+    return { shape: "messages", incomplete: true, latestAssistantComplete: false, error: "projection_limit_exceeded" };
+  }
+  return result;
 }
 function accepted<T>(accountId: string, value: T): JobResult<T> {
   return { classification: "accepted", accountId, value };
