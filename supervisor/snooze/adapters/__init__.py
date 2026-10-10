@@ -1,0 +1,1 @@
+"""Capability-aware provider adapters."""

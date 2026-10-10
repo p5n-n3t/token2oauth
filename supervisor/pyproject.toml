@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snooze-workers"
+version = "0.1.0"
+description = "Local-first visibility for distributed AI workers"
+requires-python = ">=3.11"
+
+[project.scripts]
+snooze = "snooze.cli:main"
+
+[tool.setuptools.package-data]
+snooze = ["static/*", "static/**/*"]
+
+[tool.setuptools.packages.find]
+include = ["snooze*"]
