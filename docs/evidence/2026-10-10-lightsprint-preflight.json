@@ -1,0 +1,494 @@
+{
+  "verifiedAt": "2026-10-10",
+  "scope": "per-account initialization and API reads; bounded inference; no full model catalog or capacity API exposed",
+  "accounts": [
+    {
+      "account": "Lightsprint AI - 9 - zhaddadz",
+      "id": "dOngxvB25M4Q",
+      "workspace": "64NK9ereOJtQZRun3KcgU",
+      "repoCount": 7,
+      "projectRepos": [
+        {
+          "name": "token2oauth",
+          "id": "VqaIMBW7AaQxpBaxbNM7R"
+        }
+      ],
+      "taskCount": 24,
+      "listedSessions": 24,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "FPV_S_NLUq6Onp3eIuXNH",
+      "statusSample": {
+        "sessionStatus": "failed",
+        "sandboxStatus": "finished",
+        "model": "gpt-6-luna",
+        "canSendMessage": false,
+        "isOwner": true,
+        "errorCode": "SANDBOX_TIMEOUT",
+        "errorMessage": "The sandbox stopped responding, usually because a command inside it ran out of memory. Please try again.",
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint AI - 9 - zhaddadz",
+        "accountId": "dOngxvB25M4Q",
+        "start": "2026-10-10T14:33:57.738Z",
+        "model": "gpt-6-luna",
+        "sessionId": "6UaisElvPutSl_hWgWlXt",
+        "marker": "T2O_PREFLIGHT_dOngxvB25M4Q_OK",
+        "receipt": {
+          "ok": true,
+          "queued": false,
+          "queue": null
+        },
+        "execution": "verified",
+        "status": "idle",
+        "errorCode": null,
+        "errorMessage": null,
+        "assistantCreatedAt": "2026-10-10T14:34:17.313Z",
+        "end": "2026-10-10T14:34:39.167Z"
+      }
+    },
+    {
+      "account": "Lightsprint AI - 10 - ecummi16",
+      "id": "KOGWwzYKbBJC",
+      "workspace": "1PQ4HeERPOFOkQam53K_H",
+      "repoCount": 10,
+      "projectRepos": [
+        {
+          "name": "token2oauth",
+          "id": "68in6FBHshyW5fHX1h80H"
+        },
+        {
+          "name": "snooze",
+          "id": "IhhGpPBmc0v1j-F9SlaVV"
+        }
+      ],
+      "taskCount": 9,
+      "listedSessions": 9,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "mNYHOmibCQuwQoZVBe42J",
+      "statusSample": {
+        "sessionStatus": "idle",
+        "sandboxStatus": "ready",
+        "model": "gpt-6-luna",
+        "canSendMessage": true,
+        "isOwner": true,
+        "errorCode": null,
+        "errorMessage": null,
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint AI - 10 - ecummi16",
+        "accountId": "KOGWwzYKbBJC",
+        "start": "2026-10-10T14:31:20.583Z",
+        "model": "gpt-6-luna",
+        "sessionId": "mNYHOmibCQuwQoZVBe42J",
+        "execution": "verified",
+        "marker": "T2O_PREFLIGHT_ACCOUNT10_OK",
+        "note": "Already executed; no duplicate submission",
+        "end": "2026-10-10T14:31:22.439Z"
+      }
+    },
+    {
+      "account": "Lightsprint AI - 8 - p0y50n",
+      "id": "DMIeL5tR_jAe",
+      "workspace": "GZxIwRwoCqo3rzLSI-Ry2",
+      "repoCount": 9,
+      "projectRepos": [
+        {
+          "name": "token2oauth",
+          "id": "GOhXDRdrCHcltt57vkU0u"
+        },
+        {
+          "name": "snooze",
+          "id": "lejKJvwgkU46TEpV_yvfE"
+        }
+      ],
+      "taskCount": 15,
+      "listedSessions": 15,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "AUTQj4ynTS7-v2ZFSJ1Wp",
+      "statusSample": {
+        "sessionStatus": "idle",
+        "sandboxStatus": "ready",
+        "model": "gpt-6-luna",
+        "canSendMessage": true,
+        "isOwner": true,
+        "errorCode": null,
+        "errorMessage": null,
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint AI - 8 - p0y50n",
+        "accountId": "DMIeL5tR_jAe",
+        "start": "2026-10-10T14:31:24.487Z",
+        "model": "gpt-6-luna",
+        "sessionId": "AUTQj4ynTS7-v2ZFSJ1Wp",
+        "marker": "T2O_PREFLIGHT_DMIeL5tR_jAe_OK",
+        "receipt": {
+          "ok": true,
+          "queued": false,
+          "queue": null
+        },
+        "execution": "verified",
+        "status": "idle",
+        "errorCode": null,
+        "errorMessage": null,
+        "assistantCreatedAt": "2026-10-10T14:31:40.073Z",
+        "end": "2026-10-10T14:31:50.982Z"
+      }
+    },
+    {
+      "account": "Lightsprint AI - 7 - l2thepete",
+      "id": "DZGnca_Tap_H",
+      "workspace": "7JeCl7GVYwxnOpskvfS2Z",
+      "repoCount": 6,
+      "projectRepos": [
+        {
+          "name": "token2oauth",
+          "id": "AA_FzQ3757dgNUUHTWgMD"
+        }
+      ],
+      "taskCount": 17,
+      "listedSessions": 17,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "RXICPzPEFUyJEUj4r073G",
+      "statusSample": {
+        "sessionStatus": "failed",
+        "sandboxStatus": "finished",
+        "model": "gpt-6-luna",
+        "canSendMessage": false,
+        "isOwner": true,
+        "errorCode": "SANDBOX_TIMEOUT",
+        "errorMessage": "The sandbox stopped responding, usually because a command inside it ran out of memory. Please try again.",
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "execution": "verified-via-gateway",
+        "sessionId": "ck7907TEyc4_2qljQnwlQ",
+        "assistantContent": "T2O_PREFLIGHT_ACCOUNT07_OK",
+        "assistantCreatedAt": "2026-10-10T14:30:30.269Z",
+        "toolCalls": []
+      }
+    },
+    {
+      "account": "Lightsprint AI - 6 - niandran",
+      "id": "wqd3St6iGn5P",
+      "workspace": "SWRqM38KZFnBrvBnyfr_p",
+      "repoCount": 9,
+      "projectRepos": [
+        {
+          "name": "token2oauth",
+          "id": "Ra3e8nWPpn-rH6Q0VS0d8"
+        },
+        {
+          "name": "snooze",
+          "id": "ZMD3z1birgWn0gIt575Jz"
+        }
+      ],
+      "taskCount": 16,
+      "listedSessions": 16,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "85vAzBZUQcnC2HxO7jBWE",
+      "statusSample": {
+        "sessionStatus": "idle",
+        "sandboxStatus": "ready",
+        "model": "gpt-6-luna",
+        "canSendMessage": true,
+        "isOwner": true,
+        "errorCode": "FOLLOWUP_DISPATCH_FAILED",
+        "errorMessage": null,
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint AI - 6 - niandran",
+        "accountId": "wqd3St6iGn5P",
+        "start": "2026-10-10T14:31:50.987Z",
+        "model": "gpt-6-luna",
+        "sessionId": "85vAzBZUQcnC2HxO7jBWE",
+        "marker": "T2O_PREFLIGHT_wqd3St6iGn5P_OK",
+        "receipt": {
+          "ok": true,
+          "queued": false,
+          "queue": null
+        },
+        "execution": "verified",
+        "status": "idle",
+        "errorCode": null,
+        "errorMessage": null,
+        "assistantCreatedAt": "2026-10-10T14:32:15.032Z",
+        "end": "2026-10-10T14:32:30.667Z"
+      }
+    },
+    {
+      "account": "Lightsprint AI - 5 - elleparker",
+      "id": "YFi2EwrtdFDB",
+      "workspace": "de6CZvtpKiBdScX1qarB1",
+      "repoCount": 9,
+      "projectRepos": [
+        {
+          "name": "snooze",
+          "id": "Lnh5NmWcd4RTAGIzZwf-a"
+        },
+        {
+          "name": "token2oauth",
+          "id": "ubUgj1u61v06kUuWEbEFE"
+        }
+      ],
+      "taskCount": 18,
+      "listedSessions": 18,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "qG344fG9xeKQNkwAw2I_R",
+      "statusSample": {
+        "sessionStatus": "failed",
+        "sandboxStatus": "finished",
+        "model": "gpt-6-luna",
+        "canSendMessage": false,
+        "isOwner": true,
+        "errorCode": "SANDBOX_TIMEOUT",
+        "errorMessage": "The sandbox stopped responding, usually because a command inside it ran out of memory. Please try again.",
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint AI - 5 - elleparker",
+        "accountId": "YFi2EwrtdFDB",
+        "start": "2026-10-10T14:31:50.991Z",
+        "model": "gpt-6-luna",
+        "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+        "marker": "T2O_PREFLIGHT_YFi2EwrtdFDB_OK",
+        "receipt": {
+          "ok": true,
+          "queued": false,
+          "queue": null
+        },
+        "execution": "verified",
+        "status": "idle",
+        "errorCode": null,
+        "errorMessage": null,
+        "assistantCreatedAt": "2026-10-10T14:32:11.050Z",
+        "end": "2026-10-10T14:32:19.472Z"
+      }
+    },
+    {
+      "account": "Lightsprint AI - 4 - chupalopez",
+      "id": "kZ9RItdbg-5o",
+      "workspace": "PT6wCo1NzBVtVgGkUYpA7",
+      "repoCount": 7,
+      "projectRepos": [
+        {
+          "name": "token2oauth",
+          "id": "11ydhHxazr69GX6iK4C4X"
+        }
+      ],
+      "taskCount": 16,
+      "listedSessions": 16,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "Wfdk5nLwTIWJLsCK_k9Yj",
+      "statusSample": {
+        "sessionStatus": "idle",
+        "sandboxStatus": "ready",
+        "model": "gpt-6-luna",
+        "canSendMessage": true,
+        "isOwner": true,
+        "errorCode": "FOLLOWUP_DISPATCH_FAILED",
+        "errorMessage": null,
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint AI - 4 - chupalopez",
+        "accountId": "kZ9RItdbg-5o",
+        "start": "2026-10-10T14:35:01.146Z",
+        "model": "gpt-6-luna",
+        "sessionId": "cXBFgVQFntq4qb8RVLTSx",
+        "marker": "T2O_PREFLIGHT_kZ9RItdbg-5o_OK",
+        "receipt": {
+          "ok": true,
+          "queued": false,
+          "queue": null
+        },
+        "execution": "verified",
+        "status": "idle",
+        "errorCode": null,
+        "errorMessage": null,
+        "assistantCreatedAt": "2026-10-10T14:35:15.312Z",
+        "end": "2026-10-10T14:35:25.971Z"
+      }
+    },
+    {
+      "account": "Lightsprint - 3 - jqleq",
+      "id": "V0iI9ZYDWl6j",
+      "workspace": "ZAPZKLoXANXz__Z1XvPy4",
+      "repoCount": 5,
+      "projectRepos": [],
+      "taskCount": 16,
+      "listedSessions": 16,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "EqFCnELEALprgv_1RierY",
+      "statusSample": {
+        "sessionStatus": "idle",
+        "sandboxStatus": "ready",
+        "model": "gpt-6-luna",
+        "canSendMessage": true,
+        "isOwner": true,
+        "errorCode": "ACP_RELAY_DIED",
+        "errorMessage": "The agent process was interrupted. Relaunch the agent to try again.",
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint - 3 - jqleq",
+        "accountId": "V0iI9ZYDWl6j",
+        "start": "2026-10-10T14:32:30.679Z",
+        "model": "gpt-6-luna",
+        "sessionId": "EqFCnELEALprgv_1RierY",
+        "marker": "T2O_PREFLIGHT_V0iI9ZYDWl6j_OK",
+        "receipt": {
+          "ok": true,
+          "queued": false,
+          "queue": null
+        },
+        "execution": "verified",
+        "status": "idle",
+        "errorCode": null,
+        "errorMessage": null,
+        "assistantCreatedAt": "2026-10-10T14:32:48.304Z",
+        "end": "2026-10-10T14:33:09.187Z"
+      }
+    },
+    {
+      "account": "Lightsprint AI - 2 - ngilfordz",
+      "id": "NaV0u_I_Ee2Y",
+      "workspace": "ipj-wtFzCTGD3jwli9-gO",
+      "repoCount": 7,
+      "projectRepos": [
+        {
+          "name": "token2oauth",
+          "id": "SelcsyBN18thCLtgE-PCn"
+        }
+      ],
+      "taskCount": 12,
+      "listedSessions": 12,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "MVHEOPG84LmHv5z0FV0gl",
+      "statusSample": {
+        "sessionStatus": "idle",
+        "sandboxStatus": "ready",
+        "model": "gpt-6-luna",
+        "canSendMessage": true,
+        "isOwner": true,
+        "errorCode": null,
+        "errorMessage": null,
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint AI - 2 - ngilfordz",
+        "accountId": "NaV0u_I_Ee2Y",
+        "start": "2026-10-10T14:33:09.192Z",
+        "model": "gpt-6-luna",
+        "sessionId": "MVHEOPG84LmHv5z0FV0gl",
+        "marker": "T2O_PREFLIGHT_NaV0u_I_Ee2Y_OK",
+        "receipt": {
+          "ok": true,
+          "queued": false,
+          "queue": null
+        },
+        "execution": "verified",
+        "status": "idle",
+        "errorCode": null,
+        "errorMessage": null,
+        "assistantCreatedAt": "2026-10-10T14:33:26.805Z",
+        "end": "2026-10-10T14:33:39.846Z"
+      }
+    },
+    {
+      "account": "Lightsprint AI - 1 - joeyqleq",
+      "id": "pEvOQ0H3-lTU",
+      "workspace": "pNuUU3yGvz5wDtOCOxNc8",
+      "repoCount": 4,
+      "projectRepos": [],
+      "taskCount": 21,
+      "listedSessions": 20,
+      "quota": "unknown",
+      "maxConcurrency": "unknown",
+      "freeSlots": "unknown",
+      "observedModels": [
+        "gpt-6-luna"
+      ],
+      "sessionSample": "IHApauvSus2rKkLyFZ_Sh",
+      "statusSample": {
+        "sessionStatus": "idle",
+        "sandboxStatus": "ready",
+        "model": "gpt-6-luna",
+        "canSendMessage": true,
+        "isOwner": true,
+        "errorCode": null,
+        "errorMessage": null,
+        "fundingSource": "lightsprint_credits"
+      },
+      "authentication": "verified initialize + tools/list + authenticated API reads",
+      "execution": {
+        "account": "Lightsprint AI - 1 - joeyqleq",
+        "accountId": "pEvOQ0H3-lTU",
+        "start": "2026-10-10T14:33:09.195Z",
+        "model": "gpt-6-luna",
+        "sessionId": "IHApauvSus2rKkLyFZ_Sh",
+        "marker": "T2O_PREFLIGHT_pEvOQ0H3-lTU_OK",
+        "execution": "failed",
+        "error": "HTTP 402: Insufficient credits. Add credit packs, turn on usage-based billing, or wait for monthly renewal.",
+        "end": "2026-10-10T14:33:14.191Z"
+      }
+    }
+  ]
+}

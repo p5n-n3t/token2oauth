@@ -1,0 +1,70 @@
+{
+  "startedAt": "2026-10-10T14:36:59.482Z",
+  "receipts": [
+    {
+      "accountId": "KOGWwzYKbBJC",
+      "sessionId": "mNYHOmibCQuwQoZVBe42J",
+      "at": "2026-10-10T14:36:59.483Z",
+      "result": {
+        "ok": true,
+        "queued": false,
+        "queue": null
+      }
+    },
+    {
+      "accountId": "DMIeL5tR_jAe",
+      "sessionId": "AUTQj4ynTS7-v2ZFSJ1Wp",
+      "at": "2026-10-10T14:36:59.485Z",
+      "result": {
+        "ok": true,
+        "queued": false,
+        "queue": null
+      }
+    }
+  ],
+  "samples": [
+    [
+      {
+        "accountId": "KOGWwzYKbBJC",
+        "at": "2026-10-10T14:37:01.416Z",
+        "status": "running",
+        "phase": "running"
+      },
+      {
+        "accountId": "DMIeL5tR_jAe",
+        "at": "2026-10-10T14:37:02.428Z",
+        "status": "running",
+        "phase": "running"
+      }
+    ],
+    [
+      {
+        "accountId": "KOGWwzYKbBJC",
+        "at": "2026-10-10T14:37:06.508Z",
+        "status": "idle",
+        "phase": "idle"
+      },
+      {
+        "accountId": "DMIeL5tR_jAe",
+        "at": "2026-10-10T14:37:07.029Z",
+        "status": "idle",
+        "phase": "idle"
+      }
+    ]
+  ],
+  "results": [
+    {
+      "accountId": "KOGWwzYKbBJC",
+      "verified": true,
+      "assistantCreatedAt": "2026-10-10T14:37:01.521Z",
+      "toolCalls": 0
+    },
+    {
+      "accountId": "DMIeL5tR_jAe",
+      "verified": true,
+      "assistantCreatedAt": "2026-10-10T14:37:01.817Z",
+      "toolCalls": 0
+    }
+  ],
+  "finishedAt": "2026-10-10T14:37:09.063Z"
+}

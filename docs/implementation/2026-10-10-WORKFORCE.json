@@ -1,0 +1,302 @@
+{
+  "observedAt": "2026-10-10T15:01:58.721277+00:00",
+  "assignments": [
+    {
+      "assignmentId": "T2O-A01-20261010-resume1",
+      "accountId": "KOGWwzYKbBJC",
+      "sessionId": "mNYHOmibCQuwQoZVBe42J",
+      "branch": "design/t2o-unified-contract-20261010",
+      "artifact": "docs/architecture/2026-10-10-unified-contract.md",
+      "objective": "Act as architecture lead. Produce the concrete integration contract for one primary Token2OAuth repository with durable distributed job scheduler, account-pinned supported LightSprint MCP adapter, persistent supervision/inbox, safe headless resumption, observability and administration. Read completed reports origin/research/t2o-r01-lightsprint-20261010 and origin/research/t2o-r04-clients-auth-20261010. Snooze at p5n-n3t/snooze codex/snooze-command-centre1e2b56e has Python SQLite transactional scheduler/outbox/monitor and Svelte UI; reuse it initially inside supervisor/ in Token2OAuth rather than rewrite. Choose a narrow authenticated local IPC bridge; Node keeps credentials/OAuth, Python owns transactional jobs/events. Specify exact JSON DTOs/routes, job/task state transitions, dispatch ownership/idempotency/reconciliation, crash recovery, unknown credit/slot handling, bounded approved existing-session execution as well as documented fresh task launch. Consumers submit one assignment plus explicit bounded task DAG (automatic decomposition may be optional bounded model step). In-memory request concurrency is not agent capacity. Specify module/file ownership allowing parallel Node bridge, Python supervisor integration, UI and provider work without conflicts. Preserve standalone Snooze backward compatibility. Inspect current Token2 source; give exact implementation increments, test contracts and defensible limits. No hypothetical APIs. Max1800words. Own report only. No implementation.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "returned-unvalidated",
+      "observation": {
+        "at": "2026-10-10T15:00:14.082Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-A02-20261010",
+      "accountId": "KOGWwzYKbBJC",
+      "sessionId": "mNYHOmibCQuwQoZVBe42J",
+      "branch": "design/t2o-unified-contract-20261010",
+      "artifact": "docs/architecture/2026-10-10-unified-contract.md",
+      "objective": "Revise your existing contract and commit/push an amendment on same branch (do not duplicate report). Master arbitration: one job MUST distribute across MANY eligible accounts, so replace job accountId with eligibleAccountIds + per-task durable selectedAccountId; preserve account affinity afterdispatch. Support at least35 tasks (limit100 or configurable), meaningful coding artifacts/branch/PR and bounded text outputs as well as existing json-records, no forced record IDs for coding. Single authorized MCP job_submit with approved task DAG can authorize bounded execution immediately; admin draft/approve is optional UI workflow, do not require fresh human approval for every already-authorized job. Include machine jobs scope and proper MCP tool intercept handling without weakening OAuth scopes. No automatic decomposition required in first increment but user must submit one DAG in one call. Chat schema NOW LIVE VERIFIED message+clientMessageId across9accounts; enable adapter with that exact schema and no ambiguous retry, not content. Fresh launch NOW VERIFIED through Claude Code gateway task gO8EHcglYZiZzvNtcAFo7/sessionuGGzhh6Se_luLCez0p41a; selected codex defaultgpt-6.1-sol despite chosenbranchName servergeneratedlsbranch. Realassistantmarkerretrieved; stopconfirmedcancelled. Model cannot selected by documentedlaunch, distinguish modelreportedfromchoice. HTTP200inner402 fixmerged development00e3e77,123tests. Initial supported execution may use explicitlyregistered approved existing idle sessions/account, modelgpt6luna retained and safelymessages. Independent executor must verify full task packet PATCH roundtrip BEFORElaunch; Claude executor truncateddesc, correctedafterlaunch too late forinitialprompt, so do not useLLMtoassembleproviderpayloads. Nodeordinarycode doesrequests. Temporarywatchdogsessionreusebug fixed withassignmentgeneration fencing. Narrow bridge can be stagedbutcoreMCPfanoutmandatory, do not defer it. Max1200additionalwords and concrete fileownershipAPI changes. Budget5min currentmodel only.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "running",
+      "observation": {
+        "at": "2026-10-10T15:01:58.645Z",
+        "status": "running",
+        "phase": "running",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R01-20261010",
+      "accountId": "KOGWwzYKbBJC",
+      "sessionId": "mNYHOmibCQuwQoZVBe42J",
+      "branch": "research/t2o-r01-lightsprint-20261010",
+      "artifact": "docs/research/2026-10-10-lightsprint-execution.md",
+      "objective": "Audit current official LightSprint execution and capacity interfaces. External MCP exposes only lightsprint_api; chat actually needs message+clientMessageId; nine accounts executed harmless gpt-6-luna prompts, Joey account1 is HTTP402 depleted. Existing-session resume works, current external allowlist lacks fresh agent creation, quota/model catalog/capacity endpoints. First-party n8n cloud-agents/settings and task cloud-agents reads returned404. Inspect YOUR available documented native LightSprint tools for creating sessions, selecting model, listing models/usage/capacity, and subordinate execution; report tool names and input schemas if exposed. Do not call mutating launch APIs or create workers yet. Research official current docs/plugin sources only; explain a supported way for the gateway to create cloud workers, or precisely establish the missing authorization/API surface. Review token2oauth main7d084c6 provider interfaces briefly; recommend minimal adapter boundaries without a full speculative architecture. No hidden/browser-only endpoints or credentials extraction.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "validated",
+      "observation": {
+        "at": "2026-10-10T14:54:11.996Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R02-20261010",
+      "accountId": "DMIeL5tR_jAe",
+      "sessionId": "AUTQj4ynTS7-v2ZFSJ1Wp",
+      "branch": "research/t2o-r02-snooze-20261010",
+      "artifact": "docs/research/2026-10-10-snooze-recovery-inventory.md",
+      "objective": "Work in p5n-n3t/snooze. Recover current existing architecture and work on codex/snooze-command-centre, including docs/implementation reports and outstanding safety repairs/PRs; root main checkout at717ae2e and command-centre at1e2b56e. Prior backend/UI sessions85vAzBZUQcnC2HxO7jBWE and72M_-ANlDhIIs80TeNf3v were paused; do not overwrite or resume them. Identify implemented modules, persistent DB/schema, scheduler, inbox, leases/ownership, UI build packaging, monitor transport, tests and outstanding safety gates. Read history without checking out or merging other branches. Recommend precise reusable modules and safe migration/merge strategy into Token2OAuth Node/TypeScript modular monolith, considering retaining Python components if rewriting adds risk. Inspect actual code before claiming features. No implementation or broad provider research.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "validated",
+      "observation": {
+        "at": "2026-10-10T14:54:13.946Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R03-20261010",
+      "accountId": "YFi2EwrtdFDB",
+      "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+      "branch": "research/t2o-r03-search-20261010",
+      "artifact": "docs/research/2026-10-10-search-providers.md",
+      "objective": "Work ONLY in p5n-n3t/token2oauth (locate the connected member repo, do not edit the former task repo). Research official current Exa, Firecrawl, Tavily and scrape.do docs. For each cover auth/OAuth/MCP, concrete operations/endpoints/SDKs, capability differences, async jobs/cancel/poll/webhooks, quota/usage APIs, price/free allowance/rate limits/terms, field provenance and date. Recommend first two adapters and shared capability-based interfaces with provider-specialized features preserved; no duplicated paid calls. Give citations to exact official docs pages, uncertainty explicit. Do not execute paid search or scrape calls. Secondary alternatives only briefly if valuable.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "validated",
+      "observation": {
+        "at": "2026-10-10T14:53:48.210Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R04-20261010",
+      "accountId": "dOngxvB25M4Q",
+      "sessionId": "6UaisElvPutSl_hWgWlXt",
+      "branch": "research/t2o-r04-clients-auth-20261010",
+      "artifact": "docs/research/2026-10-10-clients-auth-resumption.md",
+      "objective": "Work ONLY in p5n-n3t/token2oauth connected member repo, preserve previous task. Research current official MCP authorization specification, Claude Code/Desktop/Web MCP configuration/auth and headless session resume, Codex CLI official noninteractive execution/resume, ChatGPT Web/Desktop custom MCP/connectors, scheduled tasks and whether external events can invoke dormant conversations. Also briefly classify OpenCode/Cursor/Windsurf/Cline/Roo/Continue/Perplexity/Z.ai/Hermes support without guessing. Focus on exact supported programmatic resumption adapters versus durable inbox/human notification fallback. Consumer subscriptions are not API keys; no cookies/session extraction or hidden endpoints. Include concrete official command shapes/version qualifications, security restrictions and source URLs. Claude Code2.1.286 centralized HTTP gateway OAuth+actual tools/reconnect have already passed locally.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "validated",
+      "observation": {
+        "at": "2026-10-10T14:53:51.410Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R05-20261010",
+      "accountId": "NaV0u_I_Ee2Y",
+      "sessionId": "MVHEOPG84LmHv5z0FV0gl",
+      "branch": "research/t2o-r05-workspaces-20261010",
+      "artifact": "docs/research/2026-10-10-additional-workspaces.md",
+      "objective": "Work ONLY in p5n-n3t/token2oauth connected member repo, preserve previous task. Official API research: Nebius inference versus GPU compute versus managed agents; Daytona and E2B genuine documented sandbox/job APIs; GitHub Copilot coding agent and Replit Agent programmatic control; v0/Lovable/Bolt published APIs. Identify one strong additional practical integration based on actual developer API, permissions, free/promo allowance, pricing and maintenance burden. Cover creation/execution/poll/cancel/artifacts, model/agent lifecycle versus compute-only capabilities, auth/token rotation/webhooks/rate limits. Do not execute paid operations, create projects, or extract browser sessions. Source precise official docs URLs and date. Recommend smallest useful adapter, not a broad speculative framework.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "validated",
+      "observation": {
+        "at": "2026-10-10T14:53:53.070Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R06-20261010",
+      "accountId": "kZ9RItdbg-5o",
+      "sessionId": "cXBFgVQFntq4qb8RVLTSx",
+      "branch": "research/t2o-r06-models-reuse-20261010",
+      "artifact": "docs/research/2026-10-10-inference-and-reuse.md",
+      "objective": "Work ONLY in p5n-n3t/token2oauth connected member repo, preserve previous task. Research official model provider APIs for OpenRouter, Nebius inference, Cloudflare Workers AI, OpenAI, Anthropic, Gemini, Z.ai, Ollama and llama.cpp: auth/model list/streaming/cost/usage/capability differences and supported subscription-auth CLI boundaries. Briefly evaluate mature lightweight reuse candidates: official MCP SDK, SQLite durable jobs, OpenTelemetry, OpenCode provider/session patterns, durable queue libraries, Langfuse/SigNoz dependency fit. Cite licenses/current official source docs and recommend practical modular monolith dependencies; no heavyweight framework by popularity alone. Do not execute paid inference, install providers, or use consumer web session credentials.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "validated",
+      "observation": {
+        "at": "2026-10-10T14:53:57.145Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R07-20261010",
+      "accountId": "DZGnca_Tap_H",
+      "sessionId": "ck7907TEyc4_2qljQnwlQ",
+      "branch": "fix/t2o-protocol-quota-20261010",
+      "artifact": "docs/implementation/2026-10-10-protocol-quota-fix.md",
+      "objective": "Repair proven MCP-inner-error quota eligibility defect without changing stateful retry semantics.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "additionalWorkers": 0
+      },
+      "status": "returned-unvalidated",
+      "observation": {
+        "at": "2026-10-10T14:54:50.097Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R08-20261010-resume1",
+      "accountId": "DMIeL5tR_jAe",
+      "sessionId": "AUTQj4ynTS7-v2ZFSJ1Wp",
+      "branch": "fix/snooze-dispatch-fencing-20261010",
+      "artifact": "docs/implementation/2026-10-10-dispatch-fencing.md",
+      "objective": "Implement the recovered Snooze critical dispatch safety repairs, preserving existing scheduler and standalone Trump observer. Base origin/codex/snooze-command-centre1e2b56e. Prior review/handoff docs identify race between reservation and provider I/O, stale recovery account health/auth/cooldown/quota/budget, missing audited ownership resolution and unbounded-budget acknowledgement. Scope THIS assignment to final pre-I/O fencing + recovery current policy/account/budget revalidation. Own ONLY snooze/scheduler.py, snooze/tasks.py and focused tests/test_scheduler.py and tests/test_tasks.py plus named report (inspect exact test filenames first; report if different). Implement transactional/current revision checks immediately before launch/resume, preserve own-slot accounting, never release ambiguous remote ownership or blindly retry mutation. Add meaningful failing then passing regression tests for stop/pause/revision changes after reservation and disabled/auth/quota account before resume. Do not change UI, transport, control.py, packaging or other agent work. Use isolated worktree /tmp/t2o-r08 from named remote base, do not modify existing checkout. Full Python suite after focused checks. Commit/push only owned changes. Budget one economical turn10min, report partial accurately if needed. No remote launches or paid calls.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "returned-unvalidated",
+      "observation": {
+        "at": "2026-10-10T15:00:49.717Z",
+        "status": "idle",
+        "phase": "idle",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R09-20261010",
+      "accountId": "YFi2EwrtdFDB",
+      "sessionId": "Vkw6LlIw6DrgcHV81Ci4T",
+      "branch": "feat/t2o-search-adapters-20261010",
+      "artifact": "docs/implementation/2026-10-10-search-adapters.md",
+      "objective": "Implement documented Exa/Firecrawl search and extraction adapters behind explicit capabilities; no live paid calls.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "running",
+      "observation": {
+        "at": "2026-10-10T15:01:24.223Z",
+        "status": "running",
+        "phase": "running",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R11-20261010",
+      "accountId": "NaV0u_I_Ee2Y",
+      "sessionId": "MVHEOPG84LmHv5z0FV0gl",
+      "branch": "feat/t2o-supervisor-source-20261010",
+      "artifact": "docs/implementation/2026-10-10-supervisor-source.md",
+      "objective": "Integrate preserved Snooze source into canonical Token2OAuth repository. Own ONLY supervisor/ and named report. Create isolated worktree /tmp/t2o-r11 fromorigin/main branchfeat/t2o-supervisor-source-20261010. Fetch p5n-n3t/snooze origin/codex/snooze-command-centre1e2b56e into temporary clone. Copy tracked snooze/,tests/,frontend/,pyproject.toml,LICENSE,THIRD_PARTY_NOTICES.md,SECURITY.md,README.md under supervisor/. Exclude caches, node_modules, git/env credentials, private runtime state; no .superpowers/workertranscripts. Keep code unchanged atfirst, record exact pinnedSHA/license and source manifest under supervisor/UPSTREAM.md. Run recovered Python suite from supervisor with isolatedtemp HOME/config, do not touchliveSnooze. Checkfrontend npm/bunpackagecommands with boundedreads; run tests/check/build if available withdependencyinstall no lifecycle secrets. Report testfailuresaccurately and historicalstaticassets mismatch. No runtimeautoenable, no modifiedstandaloneinstallation, no gatewayserverchanges. Future worker will add IPC; preserveallSnooze functionality and Apachelicense. npm pack --dry-run verify supervisorincluded; if packagefilesexcludes do notchangepackage.jsonownedelsewhere, reportneededchange. Commit/push narrowfiles.10min economical turn.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "running",
+      "observation": {
+        "at": "2026-10-10T15:01:24.740Z",
+        "status": "running",
+        "phase": "running",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    },
+    {
+      "assignmentId": "T2O-R12-20261010",
+      "accountId": "kZ9RItdbg-5o",
+      "sessionId": "cXBFgVQFntq4qb8RVLTSx",
+      "branch": "feat/t2o-lightsprint-jobs-adapter-20261010",
+      "artifact": "docs/implementation/2026-10-10-lightsprint-jobs-adapter.md",
+      "objective": "Implement narrow account-pinned LightSprint job execution adapter. Own ONLY new src/providers/lightsprint-jobs.ts, test/lightsprint-jobs.test.mjs and namedreport. Isolatedworktree /tmp/t2o-r12 fromorigin/main. ConsultofficialMCPtool description in your runtime and completedR01report. Adapter gets StateStore + accountId and injectable MCPclientfactory/fetch; neverroute through genericpoolselectionorcopycredentialstoPython. ReuseexistingMCPwire parsing/sessiontransport conventions. Operations:createTask(title,stackId),patchTaskInstructions(taskId,description),readTask(taskId),launchTask(taskId,provider claude|codex|auto|pi,autoMerge:false),listTaskAgents,sessionStatus,sessionTranscript bounded,sendMessage(message,clientMessageId),cancelTurn,stopSession. Documentedroutes /api/tasks/{id}/lightsprint-agents/{provider}; chat REAL verified message+clientMessageId, NOT stalecontent. PreserveowningaccountIDs; no automaticmutatingretry, return accepted/rejected/ambiguousclassification; networktimeout ambiguity mustnot silentlyreroute. Validateclosedinput boundedIDs/instructions, fixednativeMCPURL from configuredprovider plus safe URLvalidation,no userarbitraryURL,init/tool call IDs. RuntimeHTTP200isError HTTP402 mapsquota,401auth,429ratelimit withoutstoringrawtexts/secrets. launchreturnsreportedmodelbutcannotrequest exactmodel; unknowncapacitybalance remainunknown. PATCHinstructions mustreadbackandcomparebefore allowing launch helper; serverignoredbranchName inoneprobe so treatbranchreported notassumed. Avoid wholetranscripts in telemetry. TestsmeaningfulmockMCP for pinnedcredential, init+tools call, exactchatfields, lostlaunchresponse no replay, inner402, mismatchedtaskinstructionblock. No livepaidcalls orserver/indexchanges. npmtest. Commit/pushownedpaths.10min currentgpt6lunaonly.",
+      "budget": {
+        "model": "gpt-6-luna",
+        "maxMinutes": 10,
+        "maxSourceReads": 20,
+        "maxReportWords": 1500,
+        "additionalWorkers": 0
+      },
+      "status": "running",
+      "observation": {
+        "at": "2026-10-10T15:01:26.175Z",
+        "status": "running",
+        "phase": "running",
+        "model": "gpt-6-luna",
+        "errorCode": null
+      }
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "verifiedAt": "2026-10-10",
+  "checks": [
+    {
+      "check": "claude-execution",
+      "sessionId": "81d6405c-17a6-4131-b84f-c5efe2de370b",
+      "processSuccess": true,
+      "costUsd": 0.0439682,
+      "actualToolCalls": [
+        {
+          "tool": "mcp__token2oauth__lightsprint_api",
+          "arguments": {
+            "method": "GET",
+            "path": "/api/repos"
+          },
+          "isError": false,
+          "result": {
+            "count": 5,
+            "names": [
+              "icvacation",
+              "ziopsyop-new",
+              "rathlove",
+              "trumpfiles.fun-new",
+              "myhayat_new"
+            ],
+            "token2oauthPresent": false
+          }
+        }
+      ]
+    },
+    {
+      "check": "claude-reconnect",
+      "sessionId": "9b3ee1ef-6f69-4fe7-99ad-bb527d781f65",
+      "processSuccess": true,
+      "costUsd": 0.02443015,
+      "actualToolCalls": [
+        {
+          "tool": "mcp__token2oauth__lightsprint_api",
+          "arguments": {
+            "method": "GET",
+            "path": "/api/agent-sessions/EqFCnELEALprgv_1RierY/status"
+          },
+          "isError": false,
+          "result": {
+            "sessionId": "EqFCnELEALprgv_1RierY",
+            "sessionStatus": "idle",
+            "sandboxStatus": "ready",
+            "model": "gpt-6-luna",
+            "isOwner": true,
+            "fundingSource": "lightsprint_credits"
+          }
+        }
+      ]
+    }
+  ],
+  "note": "Evidence extracted from actual Claude tool messages. Model prose is not treated as provider evidence; first response incorrectly said token2oauthPresent true, and second incorrectly labeled budget as USD."
+}

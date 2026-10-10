@@ -1,0 +1,24 @@
+{
+  "verifiedAt": "2026-10-10T14:59:10Z",
+  "client": "Claude Code 2.1.286",
+  "gateway": "centralized OAuth MCP",
+  "accountAlias": "account-03",
+  "taskId": "gO8EHcglYZiZzvNtcAFo7",
+  "sessionId": "uGGzhh6Se_luLCez0p41a",
+  "launchRoute": "POST /api/tasks/{taskId}/lightsprint-agents/codex",
+  "autoMerge": false,
+  "requestedBranch": "preflight/t2o-fresh-20261010",
+  "reportedBranch": "ls/26-t2o-fresh-agent-connectivity-probe-20261-8XEV",
+  "reportedModel": "gpt-6.1-sol",
+  "modelSelectionSupported": false,
+  "assistantMarker": "T2O_FRESH_AGENT_20261010_OK",
+  "markerRetrieved": true,
+  "stopConfirmed": true,
+  "reportedInferenceCostUsd": 0.222176,
+  "limits": [
+    "Claude executor truncated initial task description; corrected provider task afterward, so initial prompt was less constrained than intended. Future ordinary-code adapter must verify description round-trip before launch.",
+    "Turn-cancel during bootstrap returned 404; later session stop succeeded.",
+    "Configured capacity and account credit balance remain unknown.",
+    "Session inference cost is provider reported, not complete billing or a balance."
+  ]
+}
