@@ -2,6 +2,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstat, mkdir, realpath, unlink } from "node:fs/promises";
 import { request as nodeRequest } from "node:http";
+import { createConnection } from "node:net";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -165,6 +166,9 @@ export function isAllowedSupervisorRoute(method: string, route: string): boolean
 const defaultHttpClient: SupervisorBridgeHttpClient = (input) => new Promise((resolvePromise, rejectPromise) => {
   const request = nodeRequest({
     socketPath: input.socketPath,
+    // The private Python bridge closes every response connection. Do not reuse
+    // a socket whose peer may be closing while another operation is dispatched.
+    agent: false,
     method: input.method,
     path: input.path,
     headers: input.headers,
@@ -199,7 +203,12 @@ const defaultHttpClient: SupervisorBridgeHttpClient = (input) => new Promise((re
     else if (input.signal.aborted) rejectPromise(input.signal.reason instanceof Error
       ? input.signal.reason
       : new SupervisorBridgeError("request_cancelled"));
-    else rejectPromise(new SupervisorBridgeError("transport_error"));
+    else {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      const failure = new SupervisorBridgeError("transport_error");
+      if (typeof code === "string" && /^E[A-Z0-9_]{1,39}$/.test(code)) Object.assign(failure, { transportCode: code });
+      rejectPromise(failure);
+    }
   });
   if (input.body) request.write(input.body);
   request.end();
@@ -470,7 +479,16 @@ export class SupervisorBridge {
         }
         if ((info.mode & 0o777) !== SOCKET_MODE) throw new SupervisorBridgeError("unsafe_socket_permissions");
         this.#socketIdentity = { dev: info.dev, ino: info.ino, uid: info.uid, mode: info.mode & 0o777 };
-        return;
+        // bind() exposes the inode before listen() makes it usable. Probe only
+        // the connection here; never retry a mutating HTTP operation for readiness.
+        const listening = await new Promise<boolean>((resolveReady) => {
+          const socket = createConnection({ path: this.socketPath });
+          const finish = (ready: boolean) => { socket.destroy(); resolveReady(ready); };
+          socket.setTimeout(Math.max(1, Math.min(200, deadline - Date.now())), () => finish(false));
+          socket.once("connect", () => finish(true));
+          socket.once("error", () => finish(false));
+        });
+        if (listening) return;
       } catch (error) {
         if (!isMissing(error)) throw error;
       }

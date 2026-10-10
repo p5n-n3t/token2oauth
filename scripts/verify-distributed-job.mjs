@@ -296,9 +296,10 @@ async function main() {
     }
     if (gateway?.listening) await closeServer(gateway);
     if (runtime) await runtime.close().catch(() => undefined);
-    if (isolatedRuntimeDir) await rm(isolatedRuntimeDir, { recursive: true, force: true }).catch(() => undefined);
+    const retainRuntime = submissionAttempted && (evidence.state !== "complete" || evidence.tasks.some((task) => !task.expectedMarkerMatched));
+    if (isolatedRuntimeDir && !retainRuntime) await rm(isolatedRuntimeDir, { recursive: true, force: true }).catch(() => undefined);
     if (isolatedAuthDir) await rm(isolatedAuthDir, { recursive: true, force: true }).catch(() => undefined);
-    process.stdout.write(`${JSON.stringify({ ...evidence, observedAt: new Date().toISOString(), cleanup: "local gateway, bridge child, temporary OAuth client and refresh record closed/removed; no remote session control sent" }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ ...evidence, observedAt: new Date().toISOString(), retainedRuntimeDir: retainRuntime ? isolatedRuntimeDir : null, cleanup: "local gateway and bridge child closed; unfinished job state retained when necessary; temporary OAuth records removed; no remote session control sent" }, null, 2)}\n`);
   }
 }
 

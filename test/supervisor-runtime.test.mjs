@@ -43,7 +43,10 @@ function fakeAdapter(accountId) {
       marker = message.match(/exact completion marker on its own line: (.+)$/)?.[1] ?? "";
       return { classification: "accepted", accountId, value: {} };
     },
-    async sessionTranscript() { return { classification: "accepted", accountId, value: { messages: [{ role: "assistant", text: `Result ${marker}`, createdAt: Date.now() }] } }; },
+    async sessionTranscript() { return { classification: "accepted", accountId, value: {
+      latestAssistantIndex: 0, latestAssistantComplete: true,
+      messages: [{ role: "assistant", content: `Result ${marker}`, timestamp: new Date().toISOString(), complete: true }],
+    } }; },
     async stopSession() { return { classification: "accepted", accountId, value: {} }; },
   };
 }
@@ -84,7 +87,7 @@ test("real Python IPC registers two accounts, completes pinned tasks, isolates c
   assert.equal(receipt.state, "queued");
   assert.deepEqual(await runtime.callTool("job_submit", submission, caller), receipt);
   const completed = await waitComplete(runtime);
-  assert.ok(["complete", "queued"].includes(completed.state));
+  assert.equal(completed.state, "complete");
   assert.deepEqual(completed.tasks.map((task) => task.selectedAccountId), ["acct-a", "acct-b"]);
   assert.deepEqual(completed.tasks.map((task) => task.sessionId), ["session-a", "session-b"]);
   const results = await runtime.callTool("job_results", { projectId: "project-a", jobId: "job-one" }, caller);
@@ -94,7 +97,7 @@ test("real Python IPC registers two accounts, completes pinned tasks, isolates c
   const snapshot = await runtime.readAdmin("project-a");
   assert.equal(snapshot.state, "ready");
   assert.equal(snapshot.providers[0].accounts.length, 2);
-  assert.equal(snapshot.jobs.find((job) => job.id === "job-one").status, "queued");
+  assert.equal(snapshot.jobs.find((job) => job.id === "job-one").status, "complete");
   assert.equal(snapshot.tasks.filter((task) => task.status === "complete").length, 2);
   assert.ok(snapshot.events.some((event) => event.source === "supervisor"));
   assert.equal("capacity" in snapshot.providers[0].accounts[0], false);
@@ -115,7 +118,7 @@ test("real Python IPC registers two accounts, completes pinned tasks, isolates c
   const persisted = await restarted.callTool("job_results", { projectId: "project-a", jobId: "job-one" }, caller);
   assert.equal(persisted.results.length, 2);
   const resumed = await restarted.callTool("job_status", { projectId: "project-a", jobId: "job-one" }, caller);
-  assert.ok(["complete", "queued"].includes(resumed.state));
+  assert.equal(resumed.state, "complete");
   assert.ok(resumed.tasks.every((task) => task.state === "complete"));
 });
 
