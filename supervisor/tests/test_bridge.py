@@ -13,11 +13,11 @@ from snooze.jobs import JobRegistry
 def assignment():
     return {
         "schemaVersion": 1, "assignmentId": "job-1", "idempotencyKey": "key-1",
-        "projectId": "project-a", "eligibleAccountIds": ["account-a", "account-b"],
+        "projectId": "project-a", "eligibleAccountIds": ["account-a"],
         "tasks": [{"taskId": "task-1", "dependsOn": [], "scopeKeys": ["path:src/input.json"],
-                   "inputRef": "artifact:input-1", "inputSha256": "a" * 64, "instructions": "Extract records",
-                   "execution": {"mode": "fresh", "provider": "codex"},
-                   "output": {"kind": "text", "maxBytes": 1024, "format": "plain"}}],
+                   "instructions": "Extract records",
+                   "execution": {"mode": "existing-session", "accountId": "account-a", "sessionId": "session-a"},
+                   "output": {"kind": "text", "maxBytes": 1024, "format": "plain", "expectedMarker": "DONE"}}],
     }
 
 
@@ -31,7 +31,7 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 
-def call(path, method="GET", body=None, bearer=None):
+def call(path, method="GET", body=None, bearer=None, route="/admin/api/v1/assignments"):
     connection = UnixHTTPConnection(path)
     headers = {}
     payload = None
@@ -40,7 +40,7 @@ def call(path, method="GET", body=None, bearer=None):
         headers["Content-Type"] = "application/json"
     if bearer is not None:
         headers["Authorization"] = "Bearer " + bearer
-    connection.request(method, "/admin/api/v1/assignments", body=payload, headers=headers)
+    connection.request(method, route, body=payload, headers=headers)
     response = connection.getresponse()
     data = response.read()
     connection.close()
@@ -52,6 +52,9 @@ class PrivateBridgeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "private"
         self.registry = JobRegistry(self.root / "jobs.sqlite3")
+        self.registry.register_account({"accountId": "account-a", "enabled": True, "authorized": True,
+            "health": "healthy", "quota": "available", "allowUnknownQuota": False,
+            "registeredSessions": [{"id": "session-a", "model": "unknown", "workspace": "workspace-a"}]})
         self.bearer = "x" * 43
         self.socket_path = self.root / "bridge.sock"
         self.server = PrivateHTTPServer(self.socket_path, self.registry, self.bearer)
@@ -80,6 +83,20 @@ class PrivateBridgeTests(unittest.TestCase):
         self.assertEqual(response.status, 202)
         self.assertEqual(result["state"], "queued")
         conn.close()
+        status, operation = call(str(self.socket_path), method="POST", body={"workerId": "node-1"},
+                                 bearer=self.bearer, route="/v1/operations/claim")
+        self.assertEqual(status, 200)
+        self.assertEqual(operation["kind"], "chat_session")
+        self.assertEqual(operation["input"]["sessionId"], "session-a")
+        self.assertEqual(operation["input"]["instructions"], "Extract records")
+
+    def test_registered_account_route_is_authenticated(self):
+        status, payload = call(str(self.socket_path), method="POST", route="/v1/accounts", bearer=self.bearer,
+            body={"accountId": "account-b", "enabled": True, "authorized": True,
+                  "health": "healthy", "quota": "unknown", "allowUnknownQuota": True,
+                  "registeredSessions": [{"id": "session-b", "model": "unknown", "workspace": "workspace-a"}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["accountId"], "account-b")
 
     def test_auth_pipe_reads_only_a_bounded_bearer(self):
         read_fd, write_fd = os.pipe()
