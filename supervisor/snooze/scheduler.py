@@ -93,7 +93,7 @@ class Scheduler:
 
     def _recover(self, attempt, adapter, status, settings, now):
         try:
-            with self.repo.dispatch_fence(attempt['id'],settings['revision']) as fence:
+            with self.repo.dispatch_fence(attempt['id'],settings['revision'],expected_state=attempt['state'],expected_generation=attempt['generation']) as fence:
                 current_settings=self._fence_eligible(fence,now)
         except DispatchFenceError as error:
             reason=str(error)
@@ -112,7 +112,7 @@ class Scheduler:
         self.repo.update_attempt(attempt['id'],'ambiguous',data=next_data,now=now)
         task=self.repo.get(attempt['task'])
         try:
-            with self.repo.dispatch_fence(attempt['id'],settings['revision']) as fence:
+            with self.repo.dispatch_fence(attempt['id'],settings['revision'],expected_state='ambiguous',expected_generation=attempt['generation']) as fence:
                 self._fence_eligible(fence,now)
                 fresh=self.repo.attempt(attempt['id'])
                 adapter.resume(fresh['session'],{**fresh,'instructions':task['instructions']})
@@ -199,7 +199,7 @@ class Scheduler:
                 attempt=self.repo.attempt(receipt.attempt_id)
                 self.repo.update_attempt(receipt.attempt_id,'starting',data={'requested_model':spec.requirements.get('model'),'requested_effort':spec.requirements.get('effort','low')},now=now)
                 try:
-                    with self.repo.dispatch_fence(receipt.attempt_id,settings['revision'],override_pause=manual and override_pause) as fence:
+                    with self.repo.dispatch_fence(receipt.attempt_id,settings['revision'],expected_state='starting',expected_generation=receipt.generation,override_pause=manual and override_pause) as fence:
                         self._fence_eligible(fence,now)
                         fresh_task=self.repo.get(spec.id)
                         fresh_spec=self.repo.spec(spec.id)

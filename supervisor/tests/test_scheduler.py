@@ -140,6 +140,38 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(self.repo.active('p'),[])
         self.assertIn({'task':'t','action':'dispatch_fenced'},report.decisions)
 
+    def test_cancel_between_starting_and_dispatch_fence_prevents_launch_and_keeps_owner(self):
+        self.add()
+        update=self.repo.update_attempt
+        def cancel_after_start(attempt_id,state,**kwargs):
+            result=update(attempt_id,state,**kwargs)
+            if state=='starting': update(attempt_id,'cancel_pending',now=100)
+            return result
+        self.repo.update_attempt=cancel_after_start
+
+        report=self.scheduler.tick('p',100)
+
+        self.assertEqual(self.adapter.launches,[])
+        self.assertEqual(self.repo.active('p')[0]['state'],'cancel_pending')
+        self.assertEqual(self.repo.get('t')['state'],'cancel_pending')
+        self.assertIn({'task':'t','action':'dispatch_fenced'},report.decisions)
+
+    def test_running_receipt_cannot_overwrite_cancel_pending(self):
+        self.add()
+        update=self.repo.update_attempt
+        def cancel_before_running_receipt(attempt_id,state,**kwargs):
+            if state=='running' and kwargs.get('session'):
+                update(attempt_id,'cancel_pending',now=100)
+            return update(attempt_id,state,**kwargs)
+        self.repo.update_attempt=cancel_before_running_receipt
+
+        self.scheduler.tick('p',100)
+
+        attempt=self.repo.active('p')[0]
+        self.assertEqual(attempt['state'],'cancel_pending')
+        self.assertEqual(attempt['session'],'session-t')
+        self.assertEqual(self.repo.get('t')['state'],'cancel_pending')
+
     def test_persisted_stop_waits_for_an_already_fenced_provider_call(self):
         self.add(); entered=threading.Event(); release=threading.Event(); stop_done=threading.Event()
         def launch(task,attempt):
@@ -170,6 +202,23 @@ class SchedulerTests(unittest.TestCase):
         report=self.scheduler.tick('p',101)
         self.assertEqual(self.adapter.resumes,[])
         self.assertEqual(self.repo.active('p')[0]['state'],'ambiguous')
+        self.assertIn({'task':'t','action':'recovery_fenced'},report.decisions)
+
+    def test_cancel_after_recovery_preparation_blocks_resume_and_keeps_owner(self):
+        self._active_failed_attempt()
+        update=self.repo.update_attempt
+        def cancel_after_preparation(attempt_id,state,**kwargs):
+            result=update(attempt_id,state,**kwargs)
+            if state=='ambiguous' and kwargs.get('data',{}).get('resume_message_id'):
+                update(attempt_id,'cancel_pending',now=101)
+            return result
+        self.repo.update_attempt=cancel_after_preparation
+
+        report=self.scheduler.tick('p',101)
+
+        self.assertEqual(self.adapter.resumes,[])
+        self.assertEqual(self.repo.active('p')[0]['state'],'cancel_pending')
+        self.assertEqual(self.repo.get('t')['state'],'cancel_pending')
         self.assertIn({'task':'t','action':'recovery_fenced'},report.decisions)
 
     def test_ambiguous_resume_is_reconciled_before_another_mutation(self):
