@@ -21,15 +21,14 @@ MAX_JOB_BYTES = 1024 * 1024
 MAX_DEPENDENCIES = 8
 MAX_PAGE = 200
 MUTATING_KINDS = {"create_task", "patch_task", "launch_task", "chat_session", "cancel_session"}
-OPERATION_KINDS = {
-    "create_task", "patch_task", "verify_task_packet", "launch_task",
-    "inspect_task_agents", "observe_session", "chat_session", "cancel_session",
-}
+OPERATION_KINDS = {"observe_session", "chat_session", "cancel_session"}
 ASSIGNMENT_KEYS = {"schemaVersion", "assignmentId", "idempotencyKey", "projectId", "eligibleAccountIds", "tasks"}
-TASK_KEYS = {"taskId", "dependsOn", "scopeKeys", "inputRef", "inputSha256", "instructions", "execution", "output"}
+ASSIGNMENT_OPTIONAL_KEYS = {"ownerPrincipalId", "clientId", "maxWorkers"}
+TASK_KEYS = {"taskId", "dependsOn", "scopeKeys", "instructions", "execution", "output"}
+TASK_OPTIONAL_KEYS = {"inputRef", "inputSha256", "providerTaskId", "stackId", "provider"}
 OUTPUT_KEYS = {
     "json-records": {"kind", "validator", "ids", "requiredFields"},
-    "text": {"kind", "maxBytes", "format"},
+    "text": {"kind", "maxBytes", "format", "expectedMarker"},
     "coding-artifact": {"kind", "repository", "allowedPaths", "requirePullRequest"},
 }
 
@@ -42,6 +41,11 @@ def _text(value, name, maximum=256):
 
 def _closed_object(value, keys, name):
     if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError(f"{name} has unsupported or missing fields")
+
+
+def _allowed_object(value, required, optional, name):
+    if not isinstance(value, dict) or not required <= set(value) or set(value) - required - optional:
         raise ValueError(f"{name} has unsupported or missing fields")
 
 
@@ -61,17 +65,23 @@ def _validate_scope(value):
 
 
 def validate_assignment(body):
-    _closed_object(body, ASSIGNMENT_KEYS, "assignment")
+    _allowed_object(body, ASSIGNMENT_KEYS, ASSIGNMENT_OPTIONAL_KEYS, "assignment")
     if body["schemaVersion"] != 1 or type(body["schemaVersion"]) is not int:
         raise ValueError("schemaVersion must be 1")
     _text(body["assignmentId"], "assignmentId")
     _text(body["idempotencyKey"], "idempotencyKey", 200)
     _text(body["projectId"], "projectId")
     accounts = body["eligibleAccountIds"]
-    if not isinstance(accounts, list) or not 2 <= len(accounts) <= 50:
-        raise ValueError("eligibleAccountIds must contain 2 to 50 accounts")
+    if not isinstance(accounts, list) or not 1 <= len(accounts) <= 50:
+        raise ValueError("eligibleAccountIds must contain 1 to 50 accounts")
     if any(not isinstance(account, str) or not account or len(account) > 256 for account in accounts) or len(set(accounts)) != len(accounts):
         raise ValueError("eligibleAccountIds must be distinct stable IDs")
+    for field in ASSIGNMENT_OPTIONAL_KEYS & set(body):
+        if field == "maxWorkers":
+            if type(body[field]) is not int or not 1 <= body[field] <= 32:
+                raise ValueError("maxWorkers must be between 1 and 32")
+        else:
+            _text(body[field], field, 256)
     tasks = body["tasks"]
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_TASKS:
         raise ValueError(f"tasks must contain 1 to {MAX_TASKS} entries")
@@ -80,7 +90,7 @@ def validate_assignment(body):
     ids = []
     normalized = []
     for task in tasks:
-        _closed_object(task, TASK_KEYS, "task")
+        _allowed_object(task, TASK_KEYS, TASK_OPTIONAL_KEYS, "task")
         task_id = _text(task["taskId"], "taskId")
         ids.append(task_id)
         dependencies = task["dependsOn"]
@@ -94,30 +104,41 @@ def validate_assignment(body):
         normalized_scopes = [_validate_scope(scope) for scope in scopes]
         if len(set(normalized_scopes)) != len(normalized_scopes):
             raise ValueError("Duplicate scope")
-        _text(task["inputRef"], "inputRef", 512)
-        if not isinstance(task["inputSha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", task["inputSha256"]):
-            raise ValueError("inputSha256 must be 64 lowercase hexadecimal characters")
+        has_ref = "inputRef" in task
+        has_hash = "inputSha256" in task
+        if has_ref != has_hash:
+            raise ValueError("inputRef and inputSha256 must be supplied together")
+        if has_ref:
+            _text(task["inputRef"], "inputRef", 512)
+            if not isinstance(task["inputSha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", task["inputSha256"]):
+                raise ValueError("inputSha256 must be 64 lowercase hexadecimal characters")
         if not isinstance(task["instructions"], str) or len(task["instructions"].encode("utf-8")) > MAX_INSTRUCTIONS:
             raise ValueError("instructions exceeds 16 KiB")
         if re.search(r"(?i)bearer\s+\S+|lsat_[A-Za-z0-9_-]+", task["instructions"]):
             raise ValueError("Credential-like instructions are not accepted")
-        if re.match(r"(?i)https?://", task["inputRef"]):
+        if has_ref and re.match(r"(?i)https?://", task["inputRef"]):
             raise ValueError("inputRef must be an opaque local reference")
         execution = task["execution"]
-        if not isinstance(execution, dict) or execution.get("mode") not in {"fresh", "existing-session"}:
-            raise ValueError("Unsupported execution mode")
-        if execution["mode"] == "fresh":
-            if set(execution) != {"mode", "provider"} or execution["provider"] not in {"claude", "codex", "auto", "pi"}:
-                raise ValueError("Invalid fresh execution")
-        elif set(execution) != {"mode", "sessionId", "accountId"} or not all(isinstance(execution[k], str) and execution[k] for k in ("sessionId", "accountId")):
+        if not isinstance(execution, dict) or execution.get("mode") != "existing-session":
+            raise ValueError("Fresh launches are disabled until account policy is implemented")
+        if set(execution) != {"mode", "sessionId", "accountId"} or not all(isinstance(execution[k], str) and execution[k] for k in ("sessionId", "accountId")):
             raise ValueError("Invalid registered-session execution")
-        elif execution["accountId"] not in accounts:
+        if execution["accountId"] not in accounts:
             raise ValueError("Registered session account must be eligible")
         output = task["output"]
-        if not isinstance(output, dict) or output.get("kind") not in OUTPUT_KEYS or set(output) != OUTPUT_KEYS[output.get("kind")]:
+        if not isinstance(output, dict) or output.get("kind") not in OUTPUT_KEYS or set(output) - OUTPUT_KEYS[output.get("kind")] or not OUTPUT_KEYS[output.get("kind")] - {"expectedMarker"} <= set(output):
             raise ValueError("Unsupported output contract")
-        if output["kind"] == "text" and (type(output["maxBytes"]) is not int or not 1 <= output["maxBytes"] <= 32768 or not isinstance(output["format"], str)):
+        if output["kind"] != "text":
+            raise ValueError("This runtime increment supports bounded text output only")
+        if type(output["maxBytes"]) is not int or not 1 <= output["maxBytes"] <= 32768 or not isinstance(output["format"], str) or not output["format"]:
             raise ValueError("Invalid bounded text output contract")
+        _text(output.get("expectedMarker"), "expectedMarker", 256)
+        if "providerTaskId" in task:
+            _text(task["providerTaskId"], "providerTaskId", 256)
+        if "stackId" in task:
+            _text(task["stackId"], "stackId", 256)
+        if "provider" in task:
+            _text(task["provider"], "provider", 64)
         if output["kind"] == "json-records" and (not isinstance(output["ids"], list) or not output["ids"] or not isinstance(output["requiredFields"], list) or not output["requiredFields"]):
             raise ValueError("Invalid JSON records output contract")
         if output["kind"] == "json-records" and (len(output["ids"]) > 100 or len(output["requiredFields"]) > 100 or
@@ -179,29 +200,34 @@ class JobRegistry:
                   id TEXT PRIMARY KEY, project TEXT NOT NULL, idem TEXT NOT NULL,
                   fingerprint TEXT NOT NULL, eligible TEXT NOT NULL, body TEXT NOT NULL,
                   state TEXT NOT NULL, approved INTEGER NOT NULL, revision INTEGER NOT NULL,
-                  created_at REAL NOT NULL, UNIQUE(project,idem));
+                  created_at REAL NOT NULL, owner_principal TEXT, client_id TEXT, UNIQUE(project,idem));
                 CREATE TABLE IF NOT EXISTS job_tasks(
                   assignment TEXT NOT NULL, task_id TEXT NOT NULL, body TEXT NOT NULL,
                   state TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,
                   selected_account TEXT, attempt_id TEXT, provider_task_id TEXT, session_id TEXT,
+                  released_at REAL, dispatch_at REAL, poll_count INTEGER NOT NULL DEFAULT 0, reported_model TEXT,
                   PRIMARY KEY(assignment,task_id));
                 CREATE TABLE IF NOT EXISTS operations(
                   id TEXT PRIMARY KEY, assignment TEXT NOT NULL, task_id TEXT NOT NULL,
                   attempt_id TEXT NOT NULL, generation INTEGER NOT NULL, account TEXT NOT NULL,
                   kind TEXT NOT NULL, input TEXT NOT NULL, state TEXT NOT NULL,
                   worker TEXT, lease_until REAL, result TEXT, error_class TEXT,
-                  created_at REAL NOT NULL, UNIQUE(assignment,task_id,generation,kind));
+                  created_at REAL NOT NULL, due_at REAL NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS operations_ready ON operations(state,created_at);
                 CREATE TABLE IF NOT EXISTS job_events(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, assignment TEXT NOT NULL,
                   kind TEXT NOT NULL, at REAL NOT NULL, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS bridge_control(
                   id INTEGER PRIMARY KEY CHECK(id=1), paused INTEGER NOT NULL,
-                  emergency_stop INTEGER NOT NULL, revision INTEGER NOT NULL);
-                INSERT OR IGNORE INTO bridge_control(id,paused,emergency_stop,revision) VALUES(1,0,0,1);
+                  emergency_stop INTEGER NOT NULL, revision INTEGER NOT NULL, max_workers INTEGER NOT NULL DEFAULT 3);
+                INSERT OR IGNORE INTO bridge_control(id,paused,emergency_stop,revision,max_workers) VALUES(1,0,0,1,3);
                 CREATE TABLE IF NOT EXISTS scheduler_meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
                 INSERT OR IGNORE INTO scheduler_meta(key,value) VALUES('round_robin',0);
+                CREATE TABLE IF NOT EXISTS registered_accounts(account_id TEXT PRIMARY KEY, data TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS job_results(assignment TEXT NOT NULL, task_id TEXT NOT NULL, generation INTEGER NOT NULL, text TEXT NOT NULL, assistant_at REAL NOT NULL, reported_model TEXT, created_at REAL NOT NULL, PRIMARY KEY(assignment,task_id,generation));
                 """)
+                db.execute("BEGIN IMMEDIATE")
+                self._upgrade_schema(db)
             os.chmod(self.path, 0o600)
         finally:
             os.umask(previous_umask)
@@ -227,6 +253,40 @@ class JobRegistry:
         finally:
             db.close()
 
+    @staticmethod
+    def _upgrade_schema(db):
+        additions = {
+            "assignments": {"owner_principal": "TEXT", "client_id": "TEXT"},
+            "job_tasks": {"released_at": "REAL", "dispatch_at": "REAL", "poll_count": "INTEGER NOT NULL DEFAULT 0", "reported_model": "TEXT"},
+            "bridge_control": {"max_workers": "INTEGER NOT NULL DEFAULT 3"},
+        }
+        for table, columns in additions.items():
+            existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+            for name, declaration in columns.items():
+                if name not in existing:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+        operation_columns = {row["name"] for row in db.execute("PRAGMA table_info(operations)")}
+        if "due_at" not in operation_columns:
+            db.execute("ALTER TABLE operations ADD COLUMN due_at REAL NOT NULL DEFAULT 0")
+        for index in db.execute("PRAGMA index_list(operations)").fetchall():
+            if not index["unique"]:
+                continue
+            columns = tuple(row["name"] for row in db.execute(f"PRAGMA index_info({index['name']})"))
+            if columns == ("assignment", "task_id", "generation", "kind"):
+                db.execute("DROP INDEX IF EXISTS operations_ready")
+                db.execute("ALTER TABLE operations RENAME TO operations_r14")
+                db.execute("""CREATE TABLE operations(
+                  id TEXT PRIMARY KEY, assignment TEXT NOT NULL, task_id TEXT NOT NULL,
+                  attempt_id TEXT NOT NULL, generation INTEGER NOT NULL, account TEXT NOT NULL,
+                  kind TEXT NOT NULL, input TEXT NOT NULL, state TEXT NOT NULL,
+                  worker TEXT, lease_until REAL, result TEXT, error_class TEXT,
+                  created_at REAL NOT NULL, due_at REAL NOT NULL DEFAULT 0)""")
+                db.execute("""INSERT INTO operations(id,assignment,task_id,attempt_id,generation,account,kind,input,state,worker,lease_until,result,error_class,created_at,due_at)
+                              SELECT id,assignment,task_id,attempt_id,generation,account,kind,input,state,worker,lease_until,result,error_class,created_at,0 FROM operations_r14""")
+                db.execute("DROP TABLE operations_r14")
+                break
+        db.execute("CREATE INDEX IF NOT EXISTS operations_ready ON operations(state,due_at,created_at)")
+
     def _event(self, db, assignment, kind, data=None, now=None):
         # Event payloads contain state/IDs only. Instructions and operation inputs stay private.
         safe = {key: value for key, value in (data or {}).items()
@@ -241,6 +301,64 @@ class JobRegistry:
         db.execute("INSERT INTO job_events(assignment,kind,at,data) VALUES(?,?,?,?)",
                    (assignment, kind, when, json.dumps(safe)))
 
+    def register_account(self, body, now=None):
+        required = {"accountId", "enabled", "authorized", "allowUnknownQuota", "health", "quota", "registeredSessions"}
+        _allowed_object(body, required, {"localCapacity"}, "account")
+        account_id = _text(body["accountId"], "accountId")
+        if any(type(body[key]) is not bool for key in ("enabled", "authorized", "allowUnknownQuota")):
+            raise ValueError("Account flags must be boolean")
+        if body["health"] not in {"healthy", "degraded", "auth_failed", "unknown"} or body["quota"] not in {"available", "unknown", "depleted"}:
+            raise ValueError("Invalid account health or quota signal")
+        capacity = body.get("localCapacity", 1)
+        if type(capacity) is not int or not 1 <= capacity <= 16:
+            raise ValueError("localCapacity must be between 1 and 16")
+        sessions = body["registeredSessions"]
+        if not isinstance(sessions, list) or len(sessions) > 100:
+            raise ValueError("registeredSessions must be a bounded list")
+        clean_sessions = []
+        seen = set()
+        for session in sessions:
+            _closed_object(session, {"id", "model", "workspace"}, "registered session")
+            clean = {key: _text(session[key], key, 256) for key in ("id", "model", "workspace")}
+            if clean["id"] in seen:
+                raise ValueError("Duplicate registered session")
+            seen.add(clean["id"])
+            clean_sessions.append(clean)
+        data = {"accountId": account_id, "enabled": body["enabled"], "authorized": body["authorized"],
+                "allowUnknownQuota": body["allowUnknownQuota"], "health": body["health"],
+                "quota": body["quota"], "localCapacity": capacity, "registeredSessions": clean_sessions}
+        when = time.time() if now is None else now
+        with self.connection(write=True) as db:
+            current = db.execute("SELECT revision FROM registered_accounts WHERE account_id=?", (account_id,)).fetchone()
+            revision = current["revision"] + 1 if current else 1
+            db.execute("INSERT INTO registered_accounts(account_id,data,revision,updated_at) VALUES(?,?,?,?) "
+                       "ON CONFLICT(account_id) DO UPDATE SET data=excluded.data,revision=excluded.revision,updated_at=excluded.updated_at",
+                       (account_id, json.dumps(data, sort_keys=True), revision, when))
+            return {"accountId": account_id, "revision": revision}
+
+    @staticmethod
+    def _account(db, account_id, session_id=None):
+        row = db.execute("SELECT data FROM registered_accounts WHERE account_id=?", (account_id,)).fetchone()
+        if not row:
+            raise RuntimeError("Account is not registered")
+        account = json.loads(row["data"])
+        if not account["enabled"] or not account["authorized"] or account["health"] != "healthy":
+            raise RuntimeError("Account is disabled or not authorized/healthy")
+        if account["quota"] == "depleted" or (account["quota"] == "unknown" and not account["allowUnknownQuota"]):
+            raise RuntimeError("Account quota policy blocks dispatch")
+        session = next((item for item in account["registeredSessions"] if item["id"] == session_id), None) if session_id else None
+        if session_id and session is None:
+            raise RuntimeError("Session is not registered to this account")
+        return account, session
+
+    @staticmethod
+    def _scopes_overlap(left, right):
+        for a in left:
+            for b in right:
+                if a == b or (a.startswith("path:") and b.startswith("path:") and (a.startswith(b + "/") or b.startswith(a + "/"))):
+                    return True
+        return False
+
     def submit(self, body, *, approved=True, now=None):
         body = validate_assignment(body)
         encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -252,10 +370,15 @@ class JobRegistry:
                 if prior["fingerprint"] != fingerprint:
                     raise ValueError("Idempotency key already belongs to a different assignment")
                 return self._receipt(prior)
+            for task in body["tasks"]:
+                execution = task["execution"]
+                self._account(db, execution["accountId"], execution["sessionId"])
+            assignment_row = {"owner_principal": body.get("ownerPrincipalId"), "client_id": body.get("clientId")}
             state = "queued" if approved else "draft"
-            db.execute("INSERT INTO assignments VALUES(?,?,?,?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO assignments(id,project,idem,fingerprint,eligible,body,state,approved,revision,created_at,owner_principal,client_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                        (body["assignmentId"], body["projectId"], body["idempotencyKey"], fingerprint,
-                        json.dumps(body["eligibleAccountIds"]), encoded, state, int(approved), 1, created))
+                        json.dumps(body["eligibleAccountIds"]), encoded, state, int(approved), 1, created,
+                        assignment_row["owner_principal"], assignment_row["client_id"]))
             for task in body["tasks"]:
                 db.execute("INSERT INTO job_tasks(assignment,task_id,body,state) VALUES(?,?,?,?)",
                            (body["assignmentId"], task["taskId"], json.dumps(task, ensure_ascii=False), "queued"))
@@ -268,10 +391,10 @@ class JobRegistry:
         return {"assignmentId": row["id"], "projectId": row["project"], "state": row["state"],
                 "revision": row["revision"], "taskCount": len(json.loads(row["body"])["tasks"])}
 
-    def get_assignment(self, assignment_id):
+    def get_assignment(self, assignment_id, owner_principal_id=None, client_id=None):
         with self.connection() as db:
             row = db.execute("SELECT * FROM assignments WHERE id=?", (assignment_id,)).fetchone()
-            if not row:
+            if not row or (row["owner_principal"] and row["owner_principal"] != owner_principal_id) or (row["client_id"] and row["client_id"] != client_id):
                 return None
             tasks = []
             for task in db.execute("SELECT * FROM job_tasks WHERE assignment=? ORDER BY rowid", (assignment_id,)):
@@ -283,12 +406,20 @@ class JobRegistry:
                               "modelReported": None, "providerStatus": None, "quota": "unknown", "capacity": "unknown"})
             return {"schemaVersion": 1, **self._receipt(row), "eligibleAccountIds": json.loads(row["eligible"]), "tasks": tasks}
 
-    def list_assignments(self, project, *, offset=0, limit=50):
+    def list_assignments(self, project, *, offset=0, limit=50, owner_principal_id=None, client_id=None):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= MAX_PAGE:
             raise ValueError("Invalid assignment page")
         with self.connection() as db:
-            total = db.execute("SELECT COUNT(*) FROM assignments WHERE project=?", (project,)).fetchone()[0]
-            rows = db.execute("SELECT * FROM assignments WHERE project=? ORDER BY created_at,id LIMIT ? OFFSET ?", (project, limit, offset)).fetchall()
+            clauses, args = [], [project]
+            if owner_principal_id:
+                clauses.append("(owner_principal IS NULL OR owner_principal=?)")
+                args.append(owner_principal_id)
+            if client_id:
+                clauses.append("(client_id IS NULL OR client_id=?)")
+                args.append(client_id)
+            where = " AND " + " AND ".join(clauses) if clauses else ""
+            total = db.execute("SELECT COUNT(*) FROM assignments WHERE project=?" + where, args).fetchone()[0]
+            rows = db.execute("SELECT * FROM assignments WHERE project=?" + where + " ORDER BY created_at,id LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
         return {"assignments": [self._receipt(row) for row in rows], "total": total, "offset": offset,
                 "hasMore": offset + len(rows) < total}
 
@@ -335,7 +466,7 @@ class JobRegistry:
         if mode == "fresh":
             return {"queued": "create_task", "created": "patch_task", "patched": "verify_task_packet",
                     "verified": "launch_task"}.get(task.get("dispatchPhase", "queued"))
-        return {"queued": "verify_task_packet", "verified": "chat_session"}.get(task.get("dispatchPhase", "queued"))
+        return "chat_session" if task.get("dispatchPhase", "queued") == "queued" else None
 
     def _queue_one_ready(self, db, now):
         control = db.execute("SELECT paused,emergency_stop FROM bridge_control WHERE id=1").fetchone()
@@ -353,15 +484,37 @@ class JobRegistry:
                 if any(states.get(dep) != "complete" for dep in deps):
                     continue
             accounts = json.loads(row["eligible"])
-            active = {r[0] for r in db.execute("SELECT selected_account FROM job_tasks WHERE selected_account IS NOT NULL AND state IN ('reserved','starting','running','awaiting_output','ambiguous','cancel_pending')")}
-            available = [account for account in accounts if account not in active]
+            control_row = db.execute("SELECT max_workers FROM bridge_control WHERE id=1").fetchone()
+            max_workers = min(json.loads(row["body"]).get("maxWorkers", control_row["max_workers"]), control_row["max_workers"])
+            active_count = db.execute("SELECT COUNT(*) FROM job_tasks WHERE state IN ('reserved','starting','running','awaiting_output','ambiguous','cancel_pending')").fetchone()[0]
+            job_active = db.execute("SELECT COUNT(*) FROM job_tasks WHERE assignment=? AND state IN ('reserved','starting','running','awaiting_output','ambiguous','cancel_pending')", (row["id"],)).fetchone()[0]
+            if active_count >= control_row["max_workers"] or job_active >= max_workers:
+                continue
+            available = []
+            for candidate in accounts:
+                try:
+                    account_data, _ = self._account(db, candidate)
+                except RuntimeError:
+                    continue
+                job_occupancy = db.execute("SELECT COUNT(*) FROM job_tasks WHERE selected_account=? AND state IN ('reserved','starting','running','awaiting_output','ambiguous','cancel_pending')", (candidate,)).fetchone()[0]
+                external_occupancy = 0
+                if self.repository is not None:
+                    for active_attempt in db.execute("SELECT data FROM attempts WHERE account=? AND released_at IS NULL", (candidate,)):
+                        owner = json.loads(active_attempt["data"] or "{}")
+                        if not owner.get("r21Assignment"):
+                            external_occupancy += 1
+                if job_occupancy + external_occupancy < account_data["localCapacity"]:
+                    available.append(candidate)
             if spec["execution"]["mode"] == "existing-session":
                 pinned = spec["execution"]["accountId"]
                 available = [account for account in available if account == pinned]
             if not available:
                 continue
+            if self._has_scope_conflict(db, row["project"], spec["scopeKeys"], row["id"], row["task_id"]):
+                continue
             rr = db.execute("SELECT value FROM scheduler_meta WHERE key='round_robin'").fetchone()[0]
             account = available[rr % len(available)]
+            account_data, session = self._account(db, account, spec["execution"]["sessionId"])
             db.execute("UPDATE scheduler_meta SET value=? WHERE key='round_robin'", (rr + 1,))
             generation = row["generation"] + 1
             attempt = uuid.uuid4().hex
@@ -373,15 +526,41 @@ class JobRegistry:
             db.execute("UPDATE job_tasks SET state='reserved',generation=?,selected_account=?,attempt_id=? WHERE assignment=? AND task_id=? AND state IN ('queued','retry_due')",
                        (generation, account, attempt, row["id"], row["task_id"]))
             operation_id = uuid.uuid4().hex
-            operation_input = {"assignmentId": row["id"], "taskId": row["task_id"], "phase": phase}
-            db.execute("INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,'queued',NULL,NULL,NULL,NULL,?)",
+            dispatch_at = now
+            operation_input = {"sessionId": session["id"], "instructions": spec["instructions"],
+                               "clientMessageId": f"{attempt}:{generation}", "expectedMarker": spec["output"]["expectedMarker"],
+                               "dispatchAt": dispatch_at, "providerTaskId": spec.get("providerTaskId"),
+                               "stackId": spec.get("stackId"), "provider": spec.get("provider"),
+                               "workspace": session["workspace"], "model": session["model"]}
+            db.execute("UPDATE job_tasks SET dispatch_at=?,session_id=? WHERE assignment=? AND task_id=? AND generation=?",
+                       (dispatch_at, session["id"], row["id"], row["task_id"], generation))
+            db.execute("INSERT INTO operations(id,assignment,task_id,attempt_id,generation,account,kind,input,state,worker,lease_until,result,error_class,created_at,due_at) VALUES(?,?,?,?,?,?,?,?,'queued',NULL,NULL,NULL,NULL,?,?)",
                        (operation_id, row["id"], row["task_id"], attempt, generation, account, kind,
-                        json.dumps(operation_input), now))
+                        json.dumps(operation_input), now, now))
+            if self.repository is not None:
+                db.execute("INSERT INTO attempts(id,task,project,account,generation,idempotency_key,session,state,scopes,started_at,lease_until,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (attempt, f"r21:{row['id']}:{row['task_id']}", row["project"], account, generation,
+                            uuid.uuid4().hex, session["id"], "reserved", json.dumps(spec["scopeKeys"]), now,
+                            now + 600, json.dumps({"r21Assignment": row["id"], "r21TaskId": row["task_id"]})))
             self._event(db, row["id"], "operation_queued", {"state": "queued", "taskId": row["task_id"],
                                                                "accountId": account, "generation": generation,
                                                                "operationId": operation_id}, now)
             return operation_id
         return None
+
+    def _has_scope_conflict(self, db, project, scopes, assignment, task_id):
+        for row in db.execute("SELECT a.id,a.project,t.task_id,t.body AS task_body,t.state FROM assignments a JOIN job_tasks t ON t.assignment=a.id WHERE a.state NOT IN ('complete','cancelled') AND t.state IN ('reserved','starting','running','awaiting_output','ambiguous','cancel_pending')"):
+            if row["project"] == project and (row["id"], row["task_id"]) != (assignment, task_id):
+                if self._scopes_overlap(scopes, json.loads(row["task_body"])["scopeKeys"]):
+                    return True
+        if self.repository is not None:
+            for row in db.execute("SELECT scopes,data FROM attempts WHERE project=? AND released_at IS NULL", (project,)):
+                owner = json.loads(row["data"] or "{}")
+                if owner.get("r21Assignment") == assignment and owner.get("r21TaskId") == task_id:
+                    continue
+                if self._scopes_overlap(scopes, json.loads(row["scopes"])):
+                    return True
+        return False
 
     def claim_operation(self, worker_id, lease_seconds=30, now=None):
         _text(worker_id, "workerId", 128)
@@ -405,14 +584,40 @@ class JobRegistry:
             if control["paused"] or control["emergency_stop"]:
                 return None
             op = db.execute("SELECT o.* FROM operations o JOIN assignments a ON a.id=o.assignment "
-                            "WHERE o.state='queued' AND a.state='queued' AND a.approved=1 ORDER BY o.created_at,o.id LIMIT 1").fetchone()
+                            "WHERE o.state='queued' AND o.due_at<=? AND a.state='queued' AND a.approved=1 ORDER BY o.created_at,o.id LIMIT 1", (when,)).fetchone()
             if not op:
+                return None
+            task_row = db.execute("SELECT * FROM job_tasks WHERE assignment=? AND task_id=?", (op["assignment"], op["task_id"])).fetchone()
+            assignment = db.execute("SELECT * FROM assignments WHERE id=?", (op["assignment"],)).fetchone()
+            if task_row["generation"] != op["generation"] or task_row["attempt_id"] != op["attempt_id"] or task_row["selected_account"] != op["account"] or task_row["state"] not in {"reserved", "starting", "running", "awaiting_output"}:
+                db.execute("UPDATE operations SET state='rejected',error_class='StaleGeneration' WHERE id=? AND state='queued'", (op["id"],))
+                return None
+            control = db.execute("SELECT paused,emergency_stop FROM bridge_control WHERE id=1").fetchone()
+            if control["paused"] or control["emergency_stop"] or assignment["state"] != "queued":
+                return None
+            task_spec = json.loads(task_row["body"])
+            account_data, _ = self._account(db, op["account"], task_spec["execution"]["sessionId"])
+            occupied = db.execute("SELECT COUNT(*) FROM job_tasks WHERE selected_account=? AND NOT (assignment=? AND task_id=?) AND state IN ('reserved','starting','running','awaiting_output','ambiguous','cancel_pending')",
+                                  (op["account"], op["assignment"], op["task_id"])).fetchone()[0]
+            if occupied >= account_data["localCapacity"]:
+                return None
+            if self.repository is not None:
+                external = 0
+                for attempt_row in db.execute("SELECT data FROM attempts WHERE account=? AND released_at IS NULL", (op["account"],)):
+                    identity = json.loads(attempt_row["data"] or "{}")
+                    if identity.get("r21Assignment") == op["assignment"] and identity.get("r21TaskId") == op["task_id"]:
+                        continue
+                    external += 1
+                if external:
+                    return None
+            if self._has_scope_conflict(db, assignment["project"], task_spec["scopeKeys"], op["assignment"], op["task_id"]):
                 return None
             db.execute("UPDATE operations SET state='claimed',worker=?,lease_until=? WHERE id=? AND state='queued'",
                        (worker_id, when + lease_seconds, op["id"]))
             return {"operationId": op["id"], "attemptId": op["attempt_id"], "generation": op["generation"],
-                    "selectedAccountId": op["account"], "kind": op["kind"], "providerTaskId": None,
-                    "sessionId": None, "input": json.loads(op["input"])}
+                    "selectedAccountId": op["account"], "kind": op["kind"], "providerTaskId": task_spec.get("providerTaskId"),
+                    "stackId": task_spec.get("stackId"), "provider": task_spec.get("provider"),
+                    "sessionId": task_spec["execution"]["sessionId"], "input": json.loads(op["input"])}
 
     def record_result(self, operation_id, body, now=None):
         if not isinstance(body, dict) or set(body) - {"workerId", "outcome", "observedAt", "result", "errorClass"}:
@@ -424,7 +629,7 @@ class JobRegistry:
         result = body.get("result", {})
         if not isinstance(result, dict) or len(json.dumps(result, separators=(",", ":")).encode()) > 32768:
             raise ValueError("Result must be a bounded object")
-        allowed_result = {"providerTaskId", "sessionId", "branchName", "commitRef", "artifactRefs", "pullRequest", "reportedModel", "status"}
+        allowed_result = {"providerTaskId", "sessionId", "branchName", "commitRef", "artifactRefs", "pullRequest", "reportedModel", "status", "assistantText", "assistantAt"}
         if set(result) - allowed_result:
             raise ValueError("Unsupported operation result fields")
         for key, value in result.items():
@@ -439,6 +644,9 @@ class JobRegistry:
                 for nested in value.values():
                     if not isinstance(nested, str) or len(nested) > 2048 or re.search(r"(?i)bearer\s+\S+|lsat_[A-Za-z0-9_-]+", nested):
                         raise ValueError("Invalid pull request reference")
+            elif key == "assistantAt":
+                if type(value) not in {int, float} or value < 0:
+                    raise ValueError("assistantAt must be a non-negative timestamp")
             elif value is not None: raise ValueError("Invalid result value")
         error_class = body.get("errorClass")
         if error_class is not None and (not isinstance(error_class, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", error_class)):
@@ -462,8 +670,21 @@ class JobRegistry:
                 state = "ambiguous"
             elif outcome == "rejected":
                 state = "blocked"
+            elif op["kind"] == "chat_session":
+                state = "awaiting_output"
+                payload = json.loads(op["input"])
+                self._queue_observation(db, op, payload, when, delay=1)
+            elif op["kind"] == "observe_session":
+                state, complete = self._process_observation(db, op, task, result, when)
+                if complete:
+                    db.execute("UPDATE job_tasks SET released_at=? WHERE assignment=? AND task_id=? AND generation=?",
+                               (when, op["assignment"], op["task_id"], op["generation"]))
+                    db.execute("UPDATE attempts SET released_at=? WHERE id=? AND released_at IS NULL", (when, op["attempt_id"]))
+                    remaining = db.execute("SELECT COUNT(*) FROM job_tasks WHERE assignment=? AND state!='complete'", (op["assignment"],)).fetchone()[0]
+                    if remaining == 0:
+                        db.execute("UPDATE assignments SET state='complete',revision=revision+1 WHERE id=?", (op["assignment"],))
             else:
-                state = "running" if op["kind"] in {"launch_task", "chat_session"} else "starting"
+                state = "running" if op["kind"] == "launch_task" else "starting"
                 spec = json.loads(task["body"])
                 phase_map = {"create_task": "created", "patch_task": "patched", "verify_task_packet": "verified"}
                 phase = phase_map.get(op["kind"])
@@ -490,3 +711,69 @@ class JobRegistry:
             self._event(db, op["assignment"], "operation_" + state, {"state": state, "taskId": op["task_id"],
                           "generation": op["generation"], "operationId": operation_id}, when)
             return {"operationId": operation_id, "state": state, "replayed": False}
+
+    def _queue_observation(self, db, op, payload, now, delay):
+        next_id = uuid.uuid4().hex
+        db.execute("INSERT INTO operations(id,assignment,task_id,attempt_id,generation,account,kind,input,state,created_at,due_at) VALUES(?,?,?,?,?,?,'observe_session',?,'queued',?,?)",
+                   (next_id, op["assignment"], op["task_id"], op["attempt_id"], op["generation"], op["account"],
+                    json.dumps({key: payload[key] for key in ("sessionId", "clientMessageId", "dispatchAt", "expectedMarker")}), now, now + delay))
+        db.execute("UPDATE job_tasks SET poll_count=poll_count+1 WHERE assignment=? AND task_id=? AND generation=?",
+                   (op["assignment"], op["task_id"], op["generation"]))
+
+    def _process_observation(self, db, op, task, result, now):
+        payload = json.loads(op["input"])
+        status = result.get("status")
+        if result.get("sessionId") != payload["sessionId"]:
+            return "blocked", False
+        text = result.get("assistantText")
+        assistant_at = result.get("assistantAt")
+        # A stale or absent assistant result is not completion; poll again with bounded backoff.
+        if status in {"running", "pending"} or not isinstance(text, str) or type(assistant_at) not in {int, float} or assistant_at < payload["dispatchAt"]:
+            count = task["poll_count"]
+            if count >= 20:
+                return "blocked", False
+            self._queue_observation(db, op, payload, now, min(30, 2 ** min(count, 5)))
+            return "awaiting_output", False
+        if status not in {"idle", "complete", "completed", "finished", "done", "succeeded"}:
+            return "blocked", False
+        spec = json.loads(task["body"])
+        output = spec["output"]
+        encoded = text.encode("utf-8")
+        if len(encoded) > output["maxBytes"] or output["expectedMarker"] not in text:
+            return "blocked", False
+        db.execute("INSERT OR IGNORE INTO job_results(assignment,task_id,generation,text,assistant_at,reported_model,created_at) VALUES(?,?,?,?,?,?,?)",
+                   (op["assignment"], op["task_id"], op["generation"], text, assistant_at, result.get("reportedModel"), now))
+        db.execute("UPDATE job_tasks SET reported_model=? WHERE assignment=? AND task_id=? AND generation=?",
+                   (result.get("reportedModel"), op["assignment"], op["task_id"], op["generation"]))
+        return "complete", True
+
+    def assignment_results(self, assignment_id, owner_principal_id=None, client_id=None):
+        with self.connection() as db:
+            row = db.execute("SELECT owner_principal,client_id FROM assignments WHERE id=?", (assignment_id,)).fetchone()
+            if not row:
+                raise KeyError("Assignment not found")
+            if (row["owner_principal"] and row["owner_principal"] != owner_principal_id) or (row["client_id"] and row["client_id"] != client_id):
+                raise KeyError("Assignment not found")
+            results = db.execute("SELECT task_id,generation,text,assistant_at,reported_model,created_at FROM job_results WHERE assignment=? ORDER BY task_id,generation", (assignment_id,)).fetchall()
+            return {"assignmentId": assignment_id, "results": [dict(item) for item in results]}
+
+    def cancel_assignment(self, assignment_id, expected_revision, owner_principal_id=None, client_id=None, now=None):
+        when = time.time() if now is None else now
+        with self.connection(write=True) as db:
+            row = db.execute("SELECT * FROM assignments WHERE id=?", (assignment_id,)).fetchone()
+            if not row or (row["owner_principal"] and row["owner_principal"] != owner_principal_id) or (row["client_id"] and row["client_id"] != client_id):
+                raise KeyError("Assignment not found")
+            if row["revision"] != expected_revision:
+                raise RuntimeError("Stale assignment revision")
+            active = db.execute("SELECT * FROM job_tasks WHERE assignment=? AND state IN ('reserved','starting','running','awaiting_output','ambiguous','cancel_pending')", (assignment_id,)).fetchall()
+            for task in active:
+                if task["state"] == "ambiguous":
+                    continue
+                # A chat may already have reached the provider; retain ownership and stop future observation.
+                db.execute("UPDATE job_tasks SET state='cancel_pending' WHERE assignment=? AND task_id=? AND generation=?", (assignment_id, task["task_id"], task["generation"]))
+                db.execute("UPDATE job_tasks SET generation=generation+1 WHERE assignment=? AND task_id=? AND generation=?", (assignment_id, task["task_id"], task["generation"]))
+                db.execute("UPDATE operations SET state='ambiguous',error_class='CancelledAfterDispatch' WHERE assignment=? AND task_id=? AND generation=? AND state IN ('queued','claimed')", (assignment_id, task["task_id"], task["generation"]))
+            db.execute("UPDATE job_tasks SET state='cancelled' WHERE assignment=? AND state IN ('queued','retry_due')", (assignment_id,))
+            db.execute("UPDATE assignments SET state='cancelled',revision=revision+1 WHERE id=?", (assignment_id,))
+            self._event(db, assignment_id, "assignment_cancelled", {"state": "cancelled"}, when)
+            return self._receipt(db.execute("SELECT * FROM assignments WHERE id=?", (assignment_id,)).fetchone())
