@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { PROVIDER_PROFILES } from "../provider-capabilities.js";
 import { readBodyLimited, serverMessages } from "../jsonrpc-wire.js";
 import type { StateStore } from "../store.js";
@@ -5,7 +6,7 @@ import type { UpstreamAccount } from "../types.js";
 
 export type JobProvider = "claude" | "codex" | "auto" | "pi";
 export type JobClassification = "accepted" | "rejected" | "ambiguous";
-export type JobReason = "auth" | "quota" | "rate_limit" | "not_found" | "account_unavailable" | "tool_error" | "protocol_error" | "transport_ambiguous" | "identity_mismatch" | "instructions_mismatch" | "response_too_large";
+export type JobReason = "auth" | "quota" | "rate_limit" | "not_found" | "account_unavailable" | "provider_mismatch" | "endpoint_mismatch" | "tool_error" | "protocol_error" | "transport_ambiguous" | "identity_mismatch" | "instructions_mismatch" | "response_too_large";
 
 export interface JobResult<T = unknown> {
   classification: JobClassification;
@@ -21,6 +22,8 @@ export interface JobResult<T = unknown> {
 
 export interface LightSprintMcpClient {
   request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** Optional local disposal; implementations must not send another request. */
+  close?(): void | Promise<void>;
 }
 
 export interface LightSprintMcpClientOptions {
@@ -52,7 +55,9 @@ class HttpStatusError extends Error {
   constructor(readonly status: number) { super("LightSprint HTTP response"); }
 }
 class ResponseTooLargeError extends Error {}
-class AccountUnavailableError extends Error {}
+class AccountUnavailableError extends Error {
+  constructor(readonly reason: "account_unavailable" | "provider_mismatch" | "endpoint_mismatch") { super("LightSprint account is not eligible"); }
+}
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -79,16 +84,31 @@ function validateEndpoint(endpoint: URL): URL {
   return endpoint;
 }
 
+/** URL parser canonicalization permits equivalent spelling but no query, fragment, path, or authority variation. */
+function isCanonicalNativeLightSprintUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const actual = new URL(value);
+    const expected = new URL(PROVIDER_PROFILES.lightsprint.defaultServerUrl);
+    return actual.protocol === "https:" && actual.hostname === expected.hostname && actual.port === "" &&
+      actual.pathname === "/mcp" && !actual.username && !actual.password && !actual.search && !actual.hash &&
+      actual.href === expected.href;
+  } catch {
+    return false;
+  }
+}
+
 /** Streamable-HTTP client following this repository's JSON/SSE parser and session header conventions. */
 export function createLightSprintMcpClient(options: LightSprintMcpClientOptions): LightSprintMcpClient {
   const endpoint = validateEndpoint(options.endpoint);
+  let token = options.token;
   let nextId = 0;
   let sessionId: string | undefined;
   let initializePromise: Promise<void> | undefined;
 
   const post = async (message: Record<string, unknown>, notification = false): Promise<unknown> => {
     const headers = new Headers({
-      authorization: `Bearer ${options.token}`,
+      authorization: `Bearer ${token}`,
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
       "mcp-protocol-version": "2025-06-18",
@@ -99,6 +119,7 @@ export function createLightSprintMcpClient(options: LightSprintMcpClientOptions)
       headers,
       body: JSON.stringify(message),
       signal: AbortSignal.timeout(options.timeoutMs),
+      redirect: "error",
     });
     if (!response.ok) throw new HttpStatusError(response.status);
     const returnedSession = response.headers.get("mcp-session-id");
@@ -137,6 +158,12 @@ export function createLightSprintMcpClient(options: LightSprintMcpClientOptions)
     async request(method, params = {}) {
       await ensureInitialized();
       return post({ jsonrpc: "2.0", id: ++nextId, method, params });
+    },
+    close() {
+      // Drop local session and credential references; disposal performs no I/O.
+      sessionId = undefined;
+      token = "";
+      initializePromise = undefined;
     },
   };
 }
@@ -205,6 +232,7 @@ function rejected<T = unknown>(accountId: string, reason: JobReason, httpStatus?
 /** Account-pinned, no-failover adapter for the documented LightSprint MCP API. */
 export class LightSprintJobsAdapter {
   private clientPromise?: Promise<LightSprintMcpClient>;
+  private clientTokenDigest?: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly factory: LightSprintMcpClientFactory;
   private readonly timeoutMs: number;
@@ -219,15 +247,39 @@ export class LightSprintJobsAdapter {
   }
 
   private async client(): Promise<LightSprintMcpClient> {
-    if (!this.clientPromise) {
-      this.clientPromise = (async () => {
-        const state = await this.store.load();
-        const account: UpstreamAccount | undefined = state.accounts.find((item) => item.id === this.accountId);
-        if (!account || account.provider !== "lightsprint" || !account.enabled) throw new AccountUnavailableError();
-        const endpoint = validateEndpoint(new URL(PROVIDER_PROFILES.lightsprint.defaultServerUrl));
-        const token = await this.store.revealToken(account);
-        return this.factory({ endpoint, token, fetch: this.fetchImpl, timeoutMs: this.timeoutMs });
-      })();
+    const state = await this.store.load();
+    const account: UpstreamAccount | undefined = state.accounts.find((item) => item.id === this.accountId);
+    if (!account || account.enabled !== true) {
+      this.clientPromise = undefined;
+      this.clientTokenDigest = undefined;
+      throw new AccountUnavailableError("account_unavailable");
+    }
+    const legacyNativeTarget = account.provider === "generic-bearer-mcp" && isCanonicalNativeLightSprintUrl(state.config.upstreamUrl);
+    if (account.provider !== "lightsprint" && !legacyNativeTarget) {
+      this.clientPromise = undefined;
+      this.clientTokenDigest = undefined;
+      throw new AccountUnavailableError(account.provider === "generic-bearer-mcp" ? "endpoint_mismatch" : "provider_mismatch");
+    }
+    const endpoint = validateEndpoint(new URL(PROVIDER_PROFILES.lightsprint.defaultServerUrl));
+    const token = await this.store.revealToken(account);
+    // There is no credential revision in PersistedState; compare a one-way
+    // digest on every call and discard/rebuild a cached client after rotation.
+    const tokenDigest = createHash("sha256").update(token).digest("hex");
+    if (!this.clientPromise || this.clientTokenDigest !== tokenDigest) {
+      const prior = this.clientPromise;
+      this.clientTokenDigest = tokenDigest;
+      const created = Promise.resolve(this.factory({ endpoint, token, fetch: this.fetchImpl, timeoutMs: this.timeoutMs }));
+      this.clientPromise = created;
+      if (prior) void prior.then((client) => client.close?.()).catch(() => undefined);
+      try {
+        return await created;
+      } catch (error) {
+        if (this.clientPromise === created) {
+          this.clientPromise = undefined;
+          this.clientTokenDigest = undefined;
+        }
+        throw error;
+      }
     }
     return this.clientPromise;
   }
@@ -244,7 +296,7 @@ export class LightSprintJobsAdapter {
       if (error instanceof HttpStatusError) return rejected<T>(this.accountId, reasonForStatus(error.status), error.status);
       if (error instanceof ResponseTooLargeError) return rejected<T>(this.accountId, "response_too_large");
       if (error instanceof JsonRpcFailure) return rejected<T>(this.accountId, "protocol_error");
-      if (error instanceof AccountUnavailableError) return rejected<T>(this.accountId, "account_unavailable");
+      if (error instanceof AccountUnavailableError) return rejected<T>(this.accountId, error.reason);
       return { classification: "ambiguous", accountId: this.accountId, reason: "transport_ambiguous" };
     }
     const parsed = parseToolValue(raw);

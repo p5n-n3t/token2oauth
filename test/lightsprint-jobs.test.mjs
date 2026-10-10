@@ -29,7 +29,7 @@ test("native MCP transport stays account-pinned and uses initialize/session/tool
   const seen = [];
   const fetch = async (url, init) => {
     const request = JSON.parse(init.body);
-    seen.push({ url: String(url), request, auth: new Headers(init.headers).get("authorization"), session: new Headers(init.headers).get("mcp-session-id") });
+    seen.push({ url: String(url), request, auth: new Headers(init.headers).get("authorization"), session: new Headers(init.headers).get("mcp-session-id"), redirect: init.redirect });
     if (request.method === "initialize") {
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-06-18" } }), {
         status: 200,
@@ -53,6 +53,7 @@ test("native MCP transport stays account-pinned and uses initialize/session/tool
   assert.equal(seen[2].request.params.arguments.path, `/api/tasks/${TASK_ID}/lightsprint-agents`);
   assert.ok(seen.every((request) => request.url === "https://app.lightsprint.ai/mcp"));
   assert.ok(seen.every((request) => request.auth === `Bearer ${PINNED_TOKEN}`));
+  assert.ok(seen.every((request) => request.redirect === "error"));
   assert.equal(seen[2].session, "owned-session");
 });
 
@@ -166,4 +167,84 @@ test("task/session operations use documented account-scoped routes and bound tra
     ["POST", `/api/agent-sessions/${SESSION_ID}/stop`],
   ]);
   assert.deepEqual(calls[0].body, { title: "Bounded title", scope: "stack", stackId: "stack_1" });
+});
+
+test("legacy generic accounts are accepted only for a canonical configured native LightSprint URL", async () => {
+  let call;
+  const legacyStore = {
+    async load() {
+      return {
+        config: { upstreamUrl: "https://APP.LIGHTSPRINT.AI:443/mcp" },
+        accounts: [{ id: ACCOUNT_ID, provider: "generic-bearer-mcp", enabled: true }],
+      };
+    },
+    async revealToken(account) {
+      assert.equal(account.id, ACCOUNT_ID);
+      return PINNED_TOKEN;
+    },
+  };
+  const adapter = new LightSprintJobsAdapter(legacyStore, ACCOUNT_ID, {
+    clientFactory: (options) => {
+      assert.equal(options.endpoint.href, "https://app.lightsprint.ai/mcp");
+      assert.equal(options.token, PINNED_TOKEN);
+      return { request: async (_method, params) => { call = params; return ok({ task: "created" }); } };
+    },
+  });
+  const result = await adapter.createTask("Legacy compatible", "stack_1");
+  assert.equal(result.classification, "accepted");
+  assert.equal(call.arguments.path, "/api/tasks");
+});
+
+test("legacy generic accounts with non-native targets are rejected before client creation", async () => {
+  for (const upstreamUrl of [
+    "https://other.example/mcp",
+    "http://app.lightsprint.ai/mcp",
+    "https://app.lightsprint.ai/mcp/",
+    "https://app.lightsprint.ai/mcp?tenant=other",
+    "https://user:pass@app.lightsprint.ai/mcp",
+  ]) {
+    let factories = 0;
+    const legacyStore = {
+      async load() {
+        return { config: { upstreamUrl }, accounts: [{ id: ACCOUNT_ID, provider: "generic-bearer-mcp", enabled: true }] };
+      },
+      async revealToken() { assert.fail("mismatched target must be rejected before reading credential"); },
+    };
+    const adapter = new LightSprintJobsAdapter(legacyStore, ACCOUNT_ID, {
+      clientFactory: () => { factories += 1; return { request: async () => ok({}) }; },
+    });
+    const result = await adapter.readTask(TASK_ID);
+    assert.equal(result.classification, "rejected");
+    assert.equal(result.reason, "endpoint_mismatch");
+    assert.equal(factories, 0);
+  }
+});
+
+test("cached client revalidates enabled state before each call and token rotation rebuilds it", async () => {
+  const state = {
+    config: { upstreamUrl: "https://provider.example/mcp" },
+    accounts: [{ id: ACCOUNT_ID, provider: "lightsprint", enabled: true }],
+  };
+  let token = "first-token";
+  let factoryCalls = 0;
+  let requestCalls = 0;
+  const adapter = new LightSprintJobsAdapter({
+    async load() { return state; },
+    async revealToken() { return token; },
+  }, ACCOUNT_ID, {
+    clientFactory: ({ token: received }) => {
+      factoryCalls += 1;
+      return { request: async () => { requestCalls += 1; return ok({ ok: true }); }, received };
+    },
+  });
+  assert.equal((await adapter.readTask(TASK_ID)).classification, "accepted");
+  token = "rotated-token";
+  assert.equal((await adapter.readTask(TASK_ID)).classification, "accepted");
+  assert.equal(factoryCalls, 2);
+  state.accounts[0].enabled = false;
+  const disabled = await adapter.readTask(TASK_ID);
+  assert.equal(disabled.classification, "rejected");
+  assert.equal(disabled.reason, "account_unavailable");
+  assert.equal(factoryCalls, 2);
+  assert.equal(requestCalls, 2);
 });
