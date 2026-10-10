@@ -91,37 +91,47 @@ function errorCode(error: unknown): string {
   const raw = object(error)?.code ?? (error instanceof Error ? error.name : "operation_error");
   return typeof raw === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(raw) ? raw : "operation_error";
 }
-function isoOrNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+/** R21 persists epoch seconds. Provider ISO timestamps are normalized into that same unit. */
+function timestampSeconds(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   if (typeof value === "string") {
     const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
+    if (Number.isFinite(parsed)) return parsed / 1_000;
   }
   return undefined;
 }
-function newestAssistant(transcript: unknown, dispatchAt: number): { text: string; at: number } | undefined {
+function newestAssistant(transcript: unknown, dispatchAtSeconds: number): { text: string; at: number } | undefined {
   let encoded: string;
-  try { encoded = JSON.stringify(transcript); } catch { return undefined; }
-  if (encoded.length > MAX_TRANSCRIPT_CHARS) return undefined;
+  try { encoded = JSON.stringify(transcript) ?? ""; } catch { return undefined; }
+  if (!encoded || encoded.length > MAX_TRANSCRIPT_CHARS) return undefined;
   const root = object(transcript);
-  const candidates = [root?.messages, root?.entries, root?.events, Array.isArray(transcript) ? transcript : undefined]
-    .find(Array.isArray) as unknown[] | undefined;
-  if (!candidates) return undefined;
-  let selected: { text: string; at: number } | undefined;
-  for (const candidate of candidates) {
-    const row = object(candidate);
-    if (!row || ![row.role, row.author, row.type].some((v) => typeof v === "string" && /^(assistant|assistant_message)$/i.test(v))) continue;
-    const at = isoOrNumber(row.createdAt ?? row.at ?? row.timestamp ?? row.created_at);
-    if (at === undefined || at < dispatchAt) continue;
-    const rawContent = row.text ?? row.message ?? row.content;
-    let assistantText: string | undefined;
-    if (typeof rawContent === "string") assistantText = rawContent;
-    else if (Array.isArray(rawContent)) assistantText = rawContent.map((part) => text(field(part, "text"), MAX_TRANSCRIPT_CHARS) ?? "").join("");
-    if (assistantText === undefined) continue;
-    const normalized = assistantText.slice(0, MAX_TEXT);
-    if (!selected || at > selected.at) selected = { text: normalized, at };
+  const messages = root?.messages;
+  const latestIndex = root?.latestAssistantIndex;
+  // The adapter projection's pointer identifies the newest assistant message in the source
+  // transcript. Never walk backward: that would turn a truncated latest answer into completion.
+  if (!Array.isArray(messages) || !Number.isInteger(latestIndex) || Number(latestIndex) < 0 ||
+      Number(latestIndex) >= messages.length || root?.latestAssistantComplete !== true) return undefined;
+  const latest = object(messages[Number(latestIndex)]);
+  if (!latest || latest.role !== "assistant" || latest.complete !== true) return undefined;
+  const at = timestampSeconds(latest.timestamp ?? latest.createdAt ?? latest.created_at ?? latest.time ?? latest.date);
+  if (at === undefined || at < dispatchAtSeconds) return undefined;
+  const content = latest.content;
+  let assistantText: string | undefined;
+  if (typeof content === "string") assistantText = content;
+  else if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const part of content) {
+      if (typeof part === "string") parts.push(part);
+      else {
+        const item = object(part);
+        if (!item || item.type !== "text" || typeof item.text !== "string") return undefined;
+        parts.push(item.text);
+      }
+    }
+    assistantText = parts.join("");
   }
-  return selected;
+  if (assistantText === undefined) return undefined;
+  return { text: assistantText.slice(0, MAX_TEXT), at };
 }
 function validOperation(value: unknown): value is JobOperation {
   const row = object(value);
@@ -232,25 +242,27 @@ export function createJobWorker(options: JobWorkerOptions): JobWorker {
         const status = typeof rawStatus === "string" ? rawStatus.slice(0, 80) : "unknown";
         let fresh: { text: string; at: number } | undefined;
         if (status.toLowerCase() === "idle") {
-          const dispatchAt = isoOrNumber(input.dispatchAt);
-          if (dispatchAt === undefined) { errorClass = "dispatch_time_missing"; return await submit(op, "rejected", {}, errorClass); }
+          const dispatchAt = timestampSeconds(input.dispatchAt);
+          if (dispatchAt === undefined) { errorClass = "invalid_dispatch_timestamp"; return await submit(op, "rejected", {}, errorClass); }
           const transcript = await adapter.sessionTranscript(sessionId);
           if (transcript.classification === "ambiguous") { errorClass = "transcript_ambiguous"; return await submit(op, "ambiguous", {}, errorClass); }
           if (transcript.classification === "accepted") fresh = newestAssistant(transcript.value, dispatchAt);
         }
-        result = { sessionId, status: fresh ? "assistant_result_ready" : "unknown" };
+        // R21's registry accepts the session status (for example "idle") and
+        // marks completion only from a fresh assistantText + numeric assistantAt.
+        result = { sessionId, status };
         const model = field(checked.status, "reportedModel", "model", "registeredModel");
         if (typeof model === "string" && model.length <= 128) result.reportedModel = model;
         if (fresh) {
           result.assistantText = fresh.text;
-          result.assistantAt = new Date(fresh.at).toISOString();
+          result.assistantAt = fresh.at;
         }
         outcome = "accepted";
         return await submit(op, outcome, result);
       }
       if (op.kind === "cancel_session") {
         if (!sessionId) { errorClass = "invalid_operation_input"; return await submit(op, outcome, result, errorClass); }
-        if (!running || stopped || (leaseDeadlines.get(op.operationId) ?? 0) - now() <= requestTimeoutMs || !await options.isAccountEligible(op.selectedAccountId)) {
+        if (!running || stopped || (leaseDeadlines.get(op.operationId) ?? 0) - now() <= adapterTimeoutMs + requestTimeoutMs || !await options.isAccountEligible(op.selectedAccountId)) {
           errorClass = "account_unavailable_or_stopping"; return await submit(op, outcome, {}, errorClass);
         }
         mutationStarted = true;
