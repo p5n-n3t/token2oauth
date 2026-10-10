@@ -77,3 +77,13 @@ A fresh task-agent launch through Claude Code and the centralized gateway is now
 The protocol quota/auth failure fix is integrated on the development branch at 00e3e77 and passes all 123 tests. The running installed gateway remains unchanged.
 
 The temporary workforce watchdog incorrectly applied completed assignment deadlines to reused sessions and interrupted two new assignments. Those workers were explicitly resumed; the diagnostic watchdog now skips terminal assignments and checks for newer assignments sharing the session before cancellation. This is a batch safeguard, not completed product supervision.
+
+## Integration checkpoint, 2026-10-10 15:30 UTC
+
+Canonical development branch now includes preserved Snooze source and licenses, its dispatch/recovery/cancellation safety repairs, durable job/IPC primitives, scoped local MCP job tools, account-pinned LightSprint and Exa/Firecrawl adapters, standalone dashboard renderer, ordinary operation worker, and durable CLI/manual-handoff broker. Runtime composition, job completion flow and authenticated live UI are undergoing integration; no installed service has been upgraded.
+
+Verified checks at this point: 163 Node tests after MCP scope integration; 178 Python tests after first dispatch fence; 12 new registry/IPC tests; 10 resumption tests; 38 focused cancellation tests. Later full combined counts supersede these per-increment checks. Claude Code official headless resume returned the exact marker on the same saved session.
+
+Live adapter testing exposed legacy generic-bearer-mcp account metadata and newest-transcript truncation problems. Legacy compatibility is repaired without mutating the live registry; recent-transcript projection is being integrated. A send receipt alone is not reported as completed execution.
+
+Next: finish runtime/worker/Python contract alignment and scoped client isolation; prove one-submit real multi-account fan-out, durable completion and restart; mount and inspect authenticated UI; finish recovery and release packaging validation. Provider balances/slots remain unknown, and 24/35 real concurrency remains unverified.

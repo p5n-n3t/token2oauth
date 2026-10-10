@@ -1,0 +1,14 @@
+{
+  "observedAt": "2026-10-10T15:32:26.653Z",
+  "accountAlias": "account-03",
+  "sessionId": "EqFCnELEALprgv_1RierY",
+  "statusClassification": "accepted",
+  "sessionStatus": "idle",
+  "reportedModel": "gpt-6-luna",
+  "transcriptClassification": "accepted",
+  "markerRetrieved": true,
+  "assistantAt": "2026-10-10T15:18:51.689Z",
+  "marker": "T2O_ADAPTER_LIVE_20261010_OK",
+  "transport": "new account-pinned adapter; direct native MCP",
+  "gatewayMcp": false
+}

@@ -13,3 +13,7 @@ coverage/
 __pycache__/
 *.py[cod]
 supervisor/.venv/
+
+# Browser preview sessions and generated local snapshots
+.playwright-cli/
+output/playwright/*.html

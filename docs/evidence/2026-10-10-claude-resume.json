@@ -1,0 +1,11 @@
+{
+  "verifiedAt": "2026-10-10T15:27:49.595340+00:00",
+  "client": "Claude Code 2.1.286",
+  "mechanism": "official headless --resume exact saved session ID",
+  "sameSessionId": true,
+  "markerMatched": true,
+  "isError": false,
+  "reportedRunCostUsd": 0.0656963,
+  "toolsEnabled": false,
+  "scope": "CLI resumption only; supervisor event-triggered invocation not yet verified"
+}
