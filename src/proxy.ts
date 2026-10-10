@@ -1,6 +1,6 @@
 import { Readable, Transform, pipeline } from "node:stream";
 import type { Request, Response } from "express";
-import type { AccessClaims, UpstreamAccount } from "./types.js";
+import type { AccessClaims, GatewayConfig, UpstreamAccount } from "./types.js";
 import { CredentialPool } from "./pool.js";
 import { StateStore } from "./store.js";
 import { isReplaySafeRequest, mergeIncomingQuery, taskIdFromResponse } from "./routing-safety.js";
@@ -95,6 +95,61 @@ function describeRequest(req: Request, rpc: ParsedClientPayload | undefined): { 
 
 function rpcError(id: JsonRpcMessage["id"], code: number, message: string, data?: unknown): JsonRpcMessage {
   return { jsonrpc: "2.0", id: id ?? null, error: data === undefined ? { code, message } : { code, message, data } };
+}
+
+interface ProtocolErrorObservation {
+  isError: boolean;
+  recognizedStatus?: number;
+}
+
+/** Only statuses explicitly identified inside a JSON-RPC/MCP error are actionable. */
+function protocolErrorObservation(messages: JsonRpcMessage[], config: GatewayConfig): ProtocolErrorObservation {
+  let isError = false;
+  let recognizedStatus: number | undefined;
+  const acceptedStatuses = new Set([...config.authFailureStatuses, ...config.quotaStatuses]);
+  for (const message of messages) {
+    if (!message || message.jsonrpc !== "2.0") continue;
+    const texts: string[] = [];
+    if (message.error && typeof message.error === "object") {
+      isError = true;
+      if (typeof message.error.message === "string") texts.push(message.error.message);
+    }
+    const result = message.result as { isError?: unknown; content?: unknown } | undefined;
+    if (result?.isError === true) {
+      isError = true;
+      if (Array.isArray(result.content)) {
+        for (const item of result.content) {
+          if (
+            item &&
+            typeof item === "object" &&
+            (item as { type?: unknown }).type === "text" &&
+            typeof (item as { text?: unknown }).text === "string"
+          ) {
+            texts.push((item as { text: string }).text);
+          }
+        }
+      }
+    }
+    for (const text of texts) {
+      const match = /\bHTTP\s+(\d{3})\s*:/i.exec(text);
+      const status = match ? Number(match[1]) : undefined;
+      if (status !== undefined && acceptedStatuses.has(status)) {
+        if (config.authFailureStatuses.includes(status)) {
+          recognizedStatus = status;
+          break;
+        }
+        recognizedStatus ??= status;
+      }
+    }
+  }
+  return { isError, recognizedStatus };
+}
+
+function protocolErrorClass(status: number | undefined, config: GatewayConfig): string | undefined {
+  if (status === undefined) return undefined;
+  return config.authFailureStatuses.includes(status)
+    ? "upstream-protocol-auth"
+    : "upstream-protocol-quota";
 }
 
 export class McpProxy {
@@ -237,6 +292,7 @@ export class McpProxy {
     let lastHeaders: Headers | undefined;
     let lastAccountId: string | undefined;
     let lastErrorClass: string | undefined;
+    let observedProtocolErrorClass: string | undefined;
     const wantsToolsList = Boolean(policy?.hideDenied) && Boolean(rpc?.messages.some((m) => m.method === "tools/list"));
     const observeTasks = Boolean(rpc?.messages.some((m) => m.method === "tools/call"));
 
@@ -281,14 +337,19 @@ export class McpProxy {
           signal: abort.signal,
         });
 
-        this.recordAttempt(account.id, described, upstream.status, attemptStarted);
+        const observeProtocolResponse = Boolean(
+          upstream.ok && observeTasks && upstream.body && req.method !== "HEAD" &&
+          !(wantsToolsList && policy && req.method !== "HEAD"),
+        );
+        if (!observeProtocolResponse) this.recordAttempt(account.id, described, upstream.status, attemptStarted);
         const upstreamSession = upstream.headers.get("mcp-session-id") || undefined;
 
         if (upstream.ok) {
           this.pool.ownership.bindSession(upstreamSession, account.id);
           if (discoveringSession) this.pool.ownership.bindSession(incomingSession, account.id);
           if (req.method === "DELETE" && incomingSession) this.pool.ownership.forgetSession(incomingSession);
-          await this.pool.success(account.id, upstream.status, affinityKey);
+          if (observeProtocolResponse) this.pool.bindSession(affinityKey, account.id);
+          else await this.pool.success(account.id, upstream.status, affinityKey);
           const contentType = upstream.headers.get("content-type");
 
           if (wantsToolsList && policy && req.method !== "HEAD") {
@@ -307,6 +368,7 @@ export class McpProxy {
           streaming = true;
           const source = Readable.fromWeb(upstream.body as any);
           let recorded = false;
+          let healthObserved = false;
           const finished = (error?: unknown) => {
             if (recorded) return;
             recorded = true;
@@ -314,14 +376,41 @@ export class McpProxy {
               accountId: account.id,
               status: upstream.status,
               attempts,
-              errorClass: error ? "stream-interrupted" : undefined,
+              errorClass: error ? "stream-interrupted" : observedProtocolErrorClass,
             });
           };
-          const stages: NodeJS.ReadWriteStream[] = observeTasks ? [this.taskObserver(account.id, contentType)] : [];
+          const stages: NodeJS.ReadWriteStream[] = observeProtocolResponse ? [this.taskObserver(
+            account.id,
+            contentType,
+            async (messages) => {
+              const observation = protocolErrorObservation(messages, state.config);
+              let errorClass = observation.isError ? "upstream-protocol-error" : undefined;
+              try {
+                if (observation.recognizedStatus !== undefined) {
+                  await this.pool.failure(account.id, { status: observation.recognizedStatus }, state.config);
+                  errorClass = protocolErrorClass(observation.recognizedStatus, state.config);
+                } else {
+                  await this.pool.success(account.id, upstream.status, affinityKey);
+                }
+              } catch {
+                // Health observation must never interrupt the streamed response.
+              }
+              healthObserved = true;
+              observedProtocolErrorClass = errorClass;
+              this.recordAttempt(account.id, described, upstream.status, attemptStarted, errorClass);
+            },
+          )] : [];
           // pipeline() destroys every stage on error, so an upstream reset or
           // client disconnect can never surface as an uncaught stream error.
           pipeline([source, ...stages, res] as any, (error: NodeJS.ErrnoException | null) => {
             res.off("close", onClientClose);
+            if (error && observeProtocolResponse && !healthObserved) {
+              // A complete protocol result was unavailable; retain the prior
+              // HTTP-success health accounting for an interrupted stream.
+              healthObserved = true;
+              void this.pool.success(account.id, upstream.status, affinityKey).catch(() => undefined);
+              this.recordAttempt(account.id, described, upstream.status, attemptStarted, "stream-interrupted");
+            }
             finished(error && error.code !== "ERR_STREAM_PREMATURE_CLOSE" ? error : undefined);
           });
           return;
@@ -444,30 +533,38 @@ export class McpProxy {
   }
 
   /** Pass a streamed response through unchanged while learning task ownership. */
-  private taskObserver(accountId: string, contentType: string | null): Transform {
+  private taskObserver(
+    accountId: string,
+    contentType: string | null,
+    onObserved: (messages: JsonRpcMessage[]) => Promise<void>,
+  ): Transform {
     const chunks: Buffer[] = [];
     let size = 0;
     const ownership = this.pool.ownership;
     return new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         if (size < MAX_OBSERVED_BYTES) {
-          chunks.push(chunk);
-          size += chunk.length;
+          const observed = chunk.subarray(0, MAX_OBSERVED_BYTES - size);
+          chunks.push(Buffer.from(observed));
+          size += observed.length;
         }
         callback(null, chunk);
       },
       flush(callback) {
-        try {
+        void (async () => {
+          let messages: JsonRpcMessage[] = [];
           const text = Buffer.concat(chunks).subarray(0, MAX_OBSERVED_BYTES).toString("utf8");
-          for (const message of serverMessages(contentType, text)) {
+          try {
+            messages = serverMessages(contentType, text);
+          } catch {
+            // Parsing is best-effort; the response itself already passed through.
+          }
+          for (const message of messages) {
             ownership.bindTask(taskIdFromResponse(message), accountId);
           }
-        } catch {
-          // Observation is best-effort; the response itself already passed through.
-        }
-        callback();
+          await onObserved(messages).catch(() => undefined);
+        })().finally(callback);
       },
     });
   }
 }
-
