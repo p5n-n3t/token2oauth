@@ -1,0 +1,9 @@
+# T2O-R51 rejected chat reservation reconciliation
+
+`record_result` changed every `rejected` operation to `blocked`, but only released an attempt after verified completion. That left a task's account/session reserved even when the Node worker rejected its `chat_session` before calling the upstream send operation.
+
+The Node `src/job-worker.ts` chat path provides explicit pre-dispatch errors such as `account_identity_mismatch`, `invalid_operation_input`, `worker_stopping_or_lease_insufficient`, `session_not_sendable`, and `account_unavailable_or_stopping`. These are returned before `mutationStarted` is set and do not collide with the adapter's send-rejection reasons. Python releases the current task and attempt reservation only when all three conditions hold: the operation is `chat_session`, its outcome is `rejected`, and its exact error class is in that allowlist. `account_unavailable` is deliberately excluded: the worker uses it for an initial eligibility check, but it is also a valid upstream adapter rejection after `sendMessage` was attempted. The task remains blocked after a safe preflight; this does not retry it. Generic errors and adapter send rejections are not treated as proof of no dispatch.
+
+Rejected `observe_session` results retain the reservation because a prior chat may have executed. Ambiguous outcomes also retain it. Release remains behind the existing attempt/generation/account fence; cancellation marks in-flight operations ambiguous and advances generation, so a stale safe-looking result cannot release a cancelled attempt.
+
+SQLite regressions cover each allowlisted reason freeing the same account/session for a later job, ambiguous `account_unavailable` and other post-dispatch-uncertain outcomes retaining the lock, rejected observation retaining the lock, and stale-generation/cancellation results failing to release it. `python3 -m unittest discover -q` passed all 224 tests; the focused jobs module passed all 27 tests.

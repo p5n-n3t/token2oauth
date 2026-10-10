@@ -346,6 +346,8 @@ class JobRegistryTests(unittest.TestCase):
         self.registry.submit(assignment(), now=1)
         op = self.registry.claim_operation("node-1", now=2)
         self.registry.cancel_assignment("job-1", expected_revision=1, now=3)
+        with self.assertRaises(RuntimeError):
+            self.registry.record_result(op["operationId"], {"workerId": "node-1", "outcome": "rejected", "errorClass": "session_not_sendable"}, now=4)
         with self.registry.connection() as db:
             row = db.execute("SELECT state,generation,released_at FROM job_tasks WHERE assignment='job-1'").fetchone()
             operation_state = db.execute("SELECT state FROM operations WHERE id=?", (op["operationId"],)).fetchone()[0]
@@ -355,6 +357,96 @@ class JobRegistryTests(unittest.TestCase):
         self.assertIsNone(attempt["released_at"])
         self.registry.submit(assignment("job-b", "key-b", [task("next", account="account-b", session_id="session-account-a")], accounts=["account-b"], project="project-b"), now=4)
         self.assertIsNone(self.registry.claim_operation("node-2", now=5))
+
+    def test_stale_generation_preflight_rejection_cannot_release_attempt(self):
+        self.registry.submit(assignment(), now=1)
+        op = self.registry.claim_operation("worker", now=2)
+        with self.registry.connection(write=True) as db:
+            db.execute("UPDATE job_tasks SET generation=generation+1 WHERE assignment='job-1' AND task_id='task-1'")
+        with self.assertRaisesRegex(RuntimeError, "Stale operation generation"):
+            self.registry.record_result(op["operationId"], {
+                "workerId": "worker", "outcome": "rejected", "errorClass": "session_not_sendable",
+            }, now=3)
+        with self.registry.connection() as db:
+            attempt = db.execute("SELECT released_at FROM attempts WHERE id=?", (op["attemptId"],)).fetchone()
+            operation = db.execute("SELECT state FROM operations WHERE id=?", (op["operationId"],)).fetchone()
+        self.assertIsNone(attempt["released_at"])
+        self.assertEqual(operation["state"], "claimed")
+
+    def test_only_explicit_chat_preflight_rejections_release_reservation(self):
+        safe_classes = (
+            "account_identity_mismatch", "invalid_operation_input",
+            "worker_stopping_or_lease_insufficient", "session_not_sendable", "account_unavailable_or_stopping",
+        )
+        now = 1
+        for index, error_class in enumerate(safe_classes):
+            job_id = f"preflight-{index}"
+            self.registry.submit(assignment(job_id, f"key-{index}", [task(f"task-{index}")]), now=now)
+            op = self.registry.claim_operation("worker", now=now + 1)
+            with self.registry.connection() as db:
+                operation_assignment = db.execute("SELECT assignment FROM operations WHERE id=?", (op["operationId"],)).fetchone()[0]
+            self.assertEqual((operation_assignment, op["kind"]), (job_id, "chat_session"))
+            self.registry.record_result(op["operationId"], {
+                "workerId": "worker", "outcome": "rejected", "errorClass": error_class,
+            }, now=now + 2)
+            with self.registry.connection() as db:
+                task_row = db.execute("SELECT state,released_at FROM job_tasks WHERE assignment=?", (job_id,)).fetchone()
+                attempt = db.execute("SELECT released_at FROM attempts WHERE id=?", (op["attemptId"],)).fetchone()
+            self.assertEqual(task_row["state"], "blocked")
+            self.assertEqual(task_row["released_at"], now + 2)
+            self.assertEqual(attempt["released_at"], now + 2)
+            now += 10
+
+        self.registry.submit(assignment("next-job", "next-key", [task("next-task")]), now=now)
+        next_op = self.registry.claim_operation("worker", now=now + 1)
+        with self.registry.connection() as db:
+            operation_assignment = db.execute("SELECT assignment FROM operations WHERE id=?", (next_op["operationId"],)).fetchone()[0]
+        self.assertEqual((operation_assignment, next_op["sessionId"]), ("next-job", "session-account-a"))
+
+    def test_rejected_observation_after_chat_keeps_reservation(self):
+        self.registry.submit(assignment(), now=1)
+        chat = self.registry.claim_operation("worker", now=2)
+        self.registry.record_result(chat["operationId"], {"workerId": "worker", "outcome": "accepted"}, now=3)
+        observe = self.registry.claim_operation("worker", now=5)
+        self.registry.record_result(observe["operationId"], {
+            "workerId": "worker", "outcome": "rejected", "errorClass": "status_unavailable",
+        }, now=6)
+        with self.registry.connection() as db:
+            task_row = db.execute("SELECT released_at FROM job_tasks WHERE assignment='job-1'").fetchone()
+            attempt = db.execute("SELECT released_at FROM attempts WHERE id=?", (chat["attemptId"],)).fetchone()
+        self.assertIsNone(task_row["released_at"])
+        self.assertIsNone(attempt["released_at"])
+        self.registry.submit(assignment("next-job", "next-key", [task("next-task")]), now=7)
+        self.assertIsNone(self.registry.claim_operation("worker-2", now=8))
+
+    def test_ambiguous_chat_result_keeps_reservation(self):
+        self.registry.submit(assignment(), now=1)
+        chat = self.registry.claim_operation("worker", now=2)
+        self.registry.record_result(chat["operationId"], {
+            "workerId": "worker", "outcome": "ambiguous", "errorClass": "chat_ambiguous",
+        }, now=3)
+        with self.registry.connection() as db:
+            task_row = db.execute("SELECT released_at FROM job_tasks WHERE assignment='job-1'").fetchone()
+            attempt = db.execute("SELECT released_at FROM attempts WHERE id=?", (chat["attemptId"],)).fetchone()
+        self.assertIsNone(task_row["released_at"])
+        self.assertIsNone(attempt["released_at"])
+        self.registry.submit(assignment("next-job", "next-key", [task("next-task")]), now=4)
+        self.assertIsNone(self.registry.claim_operation("worker-2", now=5))
+
+    def test_account_unavailable_chat_rejection_is_not_safe_to_release(self):
+        # This class is also a valid adapter rejection after sendMessage was attempted.
+        self.registry.submit(assignment(), now=1)
+        chat = self.registry.claim_operation("worker", now=2)
+        self.registry.record_result(chat["operationId"], {
+            "workerId": "worker", "outcome": "rejected", "errorClass": "account_unavailable",
+        }, now=3)
+        with self.registry.connection() as db:
+            task_row = db.execute("SELECT released_at FROM job_tasks WHERE assignment='job-1'").fetchone()
+            attempt = db.execute("SELECT released_at FROM attempts WHERE id=?", (chat["attemptId"],)).fetchone()
+        self.assertIsNone(task_row["released_at"])
+        self.assertIsNone(attempt["released_at"])
+        self.registry.submit(assignment("next-job", "next-key", [task("next-task")]), now=4)
+        self.assertIsNone(self.registry.claim_operation("worker-2", now=5))
 
     def test_private_results_and_owner_filtering(self):
         body = assignment()
