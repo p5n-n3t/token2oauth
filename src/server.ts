@@ -5,13 +5,16 @@ import { CredentialPool } from "./pool.js";
 import { McpProxy } from "./proxy.js";
 import { StateStore, normalizeBasePath } from "./store.js";
 import { TelemetryRecorder } from "./telemetry.js";
+import { createSupervisorAdminRouter, SupervisorApi, type SupervisorBackend } from "./supervisor-api.js";
 
 export interface ServerOptions {
   host?: string;
   port?: number;
+  /** Inject the durable bridge supplied by the supervisor integration. */
+  supervisorBackend?: SupervisorBackend;
 }
 
-export async function buildApp(store = new StateStore()) {
+export async function buildApp(store = new StateStore(), options: Pick<ServerOptions, "supervisorBackend"> = {}) {
   await store.init();
   const state = await store.load();
   const sessions = new AdminSessions();
@@ -20,7 +23,8 @@ export async function buildApp(store = new StateStore()) {
   const pool = new CredentialPool(store);
   pool.telemetry = telemetry;
   const oauth = new OAuthService(store, sessions);
-  const proxy = new McpProxy(store, pool, telemetry);
+  const supervisor = new SupervisorApi(options.supervisorBackend);
+  const proxy = new McpProxy(store, pool, telemetry, supervisor);
   const ui = new (await import("./ui.js")).AdminUi(store, pool, sessions, { oauth, telemetry });
 
   const app = express();
@@ -29,6 +33,7 @@ export async function buildApp(store = new StateStore()) {
 
   const router = express.Router();
   router.use(oauth.router);
+  router.use(createSupervisorAdminRouter(store, sessions, options.supervisorBackend));
   router.use(ui.router);
   router.all(
     "/mcp",
@@ -53,13 +58,13 @@ export async function buildApp(store = new StateStore()) {
     res.status(500).json({ error: "internal_error", message: String(error?.message || error) });
   });
 
-  return { app, store, pool, telemetry, sessions };
+  return { app, store, pool, telemetry, sessions, supervisor };
 }
 
 export async function startServer(options: ServerOptions = {}) {
   const store = new StateStore();
   const init = await store.init();
-  const { app } = await buildApp(store);
+  const { app } = await buildApp(store, options);
   const host = options.host || process.env.TOKEN2OAUTH_HOST || "127.0.0.1";
   const port = options.port || Number(process.env.TOKEN2OAUTH_PORT || 2030);
 

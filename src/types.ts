@@ -90,6 +90,9 @@ export interface OAuthClient {
   createdAt: number;
 }
 
+/** Gateway-local authorization scopes. MCP remains mandatory for every MCP request. */
+export type GatewayScope = "mcp" | "jobs:read" | "jobs:write";
+
 export interface AuthorizationCodeRecord {
   code: string;
   clientId: string;
