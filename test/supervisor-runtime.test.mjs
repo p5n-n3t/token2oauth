@@ -110,6 +110,19 @@ test("real Python IPC registers two accounts, completes pinned tasks, isolates c
   assert.equal(narrowed.assignmentId, "job-two");
   const narrowedStatus = await runtime.callTool("job_status", { projectId: "project-a", jobId: "job-two" }, caller);
   assert.deepEqual(narrowedStatus.eligibleAccountIds, ["acct-a"]);
+  const inboxPage = await runtime.callTool("job_inbox", { projectId: "project-a", limit: 1 }, caller);
+  assert.equal(inboxPage.projectId, "project-a");
+  assert.equal(inboxPage.events.length, 1);
+  assert.equal(inboxPage.hasMore, true);
+  assert.match(inboxPage.cursor, /^[A-Za-z0-9_-]{32}$/);
+  const eventId = inboxPage.events[0].eventId;
+  assert.match(eventId, /^(repo|job):[1-9][0-9]{0,18}$/);
+  assert.deepEqual(await runtime.callTool("job_inbox_ack", { projectId: "project-a", eventId }, caller),
+    { projectId: "project-a", eventId, acknowledged: true });
+  await assert.rejects(runtime.callTool("job_inbox_ack", { projectId: "project-a", eventId },
+    { clientId: "client-b", projectId: "project-a" }));
+  await assert.rejects(runtime.callTool("job_inbox_ack", { projectId: "project-b", eventId },
+    { clientId: "client-a", projectId: "project-b" }));
   await runtime.close();
 
   const restarted = new SupervisorRuntime(await readSupervisorRuntimeConfig(configPath), options);
@@ -117,6 +130,10 @@ test("real Python IPC registers two accounts, completes pinned tasks, isolates c
   t.after(() => restarted.close());
   const persisted = await restarted.callTool("job_results", { projectId: "project-a", jobId: "job-one" }, caller);
   assert.equal(persisted.results.length, 2);
+  const inboxAfterCursor = await restarted.callTool("job_inbox", { projectId: "project-a", after: inboxPage.cursor, limit: 1 }, caller);
+  assert.equal(inboxAfterCursor.projectId, "project-a");
+  const persistedInbox = await restarted.callTool("job_inbox", { projectId: "project-a", limit: 100 }, caller);
+  assert.equal(persistedInbox.events.find((event) => event.eventId === eventId)?.acknowledged, true);
   const resumed = await restarted.callTool("job_status", { projectId: "project-a", jobId: "job-one" }, caller);
   assert.equal(resumed.state, "complete");
   assert.ok(resumed.tasks.every((task) => task.state === "complete"));

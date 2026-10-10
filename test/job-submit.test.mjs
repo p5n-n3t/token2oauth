@@ -7,10 +7,10 @@ import { join } from "node:path";
 import { pkceS256 } from "../dist/crypto.js";
 import { StateStore } from "../dist/store.js";
 import { buildApp } from "../dist/server.js";
-import { JobInputError, requiredJobScope, validateJobSubmission } from "../dist/job-submit.js";
+import { JobInputError, requiredJobScope, validateJobSubmission, validateJobToolArguments } from "../dist/job-submit.js";
 
 const ADMIN = "correct-horse-battery-staple";
-const names = ["job_submit", "job_status", "job_workers", "job_results", "job_control", "job_inbox"];
+const names = ["job_submit", "job_status", "job_workers", "job_results", "job_control", "job_inbox", "job_inbox_ack"];
 
 function validJob() {
   return {
@@ -41,7 +41,13 @@ test("job submission validates bounded DAGs and permits a single eligible accoun
 test("job scopes remain separate", () => {
   assert.equal(requiredJobScope("job_submit"), "jobs:write");
   assert.equal(requiredJobScope("job_control"), "jobs:write");
-  for (const name of names.filter((name) => !["job_submit", "job_control"].includes(name))) assert.equal(requiredJobScope(name), "jobs:read");
+  for (const name of names.filter((name) => !["job_submit", "job_control", "job_inbox_ack"].includes(name))) assert.equal(requiredJobScope(name), "jobs:read");
+  assert.equal(requiredJobScope("job_inbox_ack"), "jobs:write");
+  assert.deepEqual(validateJobToolArguments("job_inbox", { projectId: "project-1", after: "opaque_cursor-A9", limit: 100 }),
+    { projectId: "project-1", after: "opaque_cursor-A9", limit: 100 });
+  assert.throws(() => validateJobToolArguments("job_inbox", { projectId: "project-1", after: 12 }), /opaque cursor/);
+  assert.throws(() => validateJobToolArguments("job_inbox", { projectId: "project-1", after: "x".repeat(129) }), /opaque cursor/);
+  assert.throws(() => validateJobToolArguments("job_inbox_ack", { projectId: "project-1", eventId: "repo:0" }), /event ID/);
 });
 
 const listen = (server) => new Promise((resolve, reject) => {
@@ -117,6 +123,10 @@ test("job tools are scope-filtered and intercepted before upstream while ordinar
     assert.equal(denied.status, 403);
     assert.equal((await denied.json()).error.data.requiredScope, "jobs:write");
     assert.equal(upstreamCalls.length, beforeDenied, "unauthorized local tool calls never fall through");
+    const deniedAck = await mcp(base, readOnly, { jsonrpc: "2.0", id: 9, method: "tools/call",
+      params: { name: "job_inbox_ack", arguments: { projectId: "project-1", eventId: "repo:1" } } });
+    assert.equal(deniedAck.status, 403, "read-only job scope cannot acknowledge inbox events");
+    assert.equal((await deniedAck.json()).error.data.requiredScope, "jobs:write");
     const legacyListing = await mcp(base, legacy, { jsonrpc: "2.0", id: 5, method: "tools/list" });
     assert.equal(legacyListing.status, 503, "clients without job scopes still need a configured upstream");
     assert.deepEqual(upstreamCalls, [], "unconfigured gateway makes no upstream network request");
@@ -134,7 +144,7 @@ test("job tools are scope-filtered and intercepted before upstream while ordinar
     const listing = await mcp(base, readOnly, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     const listed = (await listing.json()).result.tools.map((tool) => tool.name);
     assert.deepEqual(listed, ["job_status", "job_workers", "job_results", "job_inbox"]);
-    assert.ok(!listed.includes("job_submit") && !listed.includes("job_control"));
+    assert.ok(!listed.includes("job_submit") && !listed.includes("job_control") && !listed.includes("job_inbox_ack"));
     const writerListing = await mcp(base, writer, { jsonrpc: "2.0", id: 6, method: "tools/list" });
     assert.deepEqual((await writerListing.json()).result.tools.map((tool) => tool.name), names);
 
