@@ -10,6 +10,7 @@ from dataclasses import asdict
 from snooze.domain import CycleReport
 from snooze.policy import Policy, DEFAULTS, PRESETS
 from snooze.adapters.base import UnsupportedOperation
+from snooze.tasks import DispatchFenceError
 
 
 class Scheduler:
@@ -57,6 +58,23 @@ class Scheduler:
         self.registry.upsert_public_config(account,{'failure_count':count,'error_kind':error_kind,
             'cooldown_until':now+min(settings['backoff_seconds']*(2**min(count-1,6)),3600)},trusted=True)
 
+    def _fence_eligible(self, fence, now):
+        settings={**DEFAULTS,**fence['settings'],'revision':fence['revision']}
+        attempt=fence['attempt']; account=attempt['account']
+        task=self.repo.spec(attempt['task'])
+        config=fence['account_config']
+        snapshot=self.registry.snapshot(account,now)
+        policy=Policy(settings,Counter(fence['account_occupied']),{account:config},
+                      fence['project_occupied'],fence['global_occupied'])
+        result=policy.evaluate(task,snapshot,now)
+        if not result.eligible:
+            raise DispatchFenceError('; '.join(result.reasons))
+        model=task.requirements.get('model')
+        limit=settings['model_limits'].get(model)
+        if limit is not None and fence['model_occupied'].get(model,0)>=limit:
+            raise DispatchFenceError('Model concurrency limit reached')
+        return settings
+
     def _validate(self, attempt, artifact, now):
         generation=artifact.get('generation',attempt['generation']) if isinstance(artifact,dict) else attempt['generation']
         if generation!=attempt['generation']:
@@ -74,8 +92,13 @@ class Scheduler:
         return {'task':spec.id,'action':'validation_failed'}
 
     def _recover(self, attempt, adapter, status, settings, now):
-        if not self.registry.authorized(attempt['account'],attempt['project']):return 'account_scope_unverified'
-        if settings['pause_dispatch'] or settings['emergency_stop']: return 'recovery_paused'
+        try:
+            with self.repo.dispatch_fence(attempt['id'],settings['revision']) as fence:
+                current_settings=self._fence_eligible(fence,now)
+        except DispatchFenceError as error:
+            reason=str(error)
+            return 'account_scope_unverified' if 'authorized' in reason or 'ownership' in reason else 'recovery_ineligible'
+        settings=current_settings
         data=attempt['data']; count=data.get('recovery_count',0)
         if now < data.get('recovery_due',0): return 'recovery_backoff'
         if count>=settings['max_recoveries']:
@@ -84,15 +107,25 @@ class Scheduler:
         if not adapter.capabilities().get('resume',{}).get('supported'): return 'resume_unsupported'
         jitter=.9+int(hashlib.sha256((attempt['id']+str(count)).encode()).hexdigest()[:4],16)/65535*.2
         next_data={'recovery_count':count+1,'recovery_due':now+settings['backoff_seconds']*(2**count)*jitter,'resume_message_id':str(uuid.uuid4())}
-        # Persist the bound before network I/O; a crash cannot reset the budget.
-        self.repo.update_attempt(attempt['id'],'awaiting_output',data=next_data,now=now)
+        # Mark the mutation ambiguous durably before I/O. A crash can then only
+        # reconcile ownership; it cannot blindly send another resume.
+        self.repo.update_attempt(attempt['id'],'ambiguous',data=next_data,now=now)
         task=self.repo.get(attempt['task'])
         try:
-            adapter.resume(attempt['session'],{**self.repo.attempt(attempt['id']),'instructions':task['instructions']})
-            return 'resume_requested'
+            with self.repo.dispatch_fence(attempt['id'],settings['revision']) as fence:
+                self._fence_eligible(fence,now)
+                fresh=self.repo.attempt(attempt['id'])
+                adapter.resume(fresh['session'],{**fresh,'instructions':task['instructions']})
+        except DispatchFenceError as error:
+            # No provider call was made; keep the remote owner fenced and reconcile
+            # before another recovery decision.
+            self.repo.update_attempt(attempt['id'],'ambiguous',data={'reason':'Recovery fenced before provider I/O','fence_reason':str(error)[:200]},now=now)
+            return 'recovery_fenced'
         except Exception:
             self.repo.update_attempt(attempt['id'],'ambiguous',data={'reason':'Resume acceptance uncertain'},now=now)
             return 'resume_ambiguous'
+        self.repo.update_attempt(attempt['id'],'awaiting_output',data={'resume_accepted':True},now=now)
+        return 'resume_requested'
 
     def tick(self, project_id, now=None, *, manual=False, override_pause=False, only_task=None):
         now=self.clock() if now is None else now
@@ -166,10 +199,19 @@ class Scheduler:
                 attempt=self.repo.attempt(receipt.attempt_id)
                 self.repo.update_attempt(receipt.attempt_id,'starting',data={'requested_model':spec.requirements.get('model'),'requested_effort':spec.requirements.get('effort','low')},now=now)
                 try:
-                    launched=self.registry.adapter(account).launch(spec,{**attempt,'instructions':task['instructions']})
+                    with self.repo.dispatch_fence(receipt.attempt_id,settings['revision'],override_pause=manual and override_pause) as fence:
+                        self._fence_eligible(fence,now)
+                        fresh_task=self.repo.get(spec.id)
+                        fresh_spec=self.repo.spec(spec.id)
+                        fresh_attempt=self.repo.attempt(receipt.attempt_id)
+                        launched=self.registry.adapter(account).launch(fresh_spec,{**fresh_attempt,'instructions':fresh_task['instructions']})
                     if not launched.get('session_id'): raise TimeoutError('Missing receipt')
                     self.repo.update_attempt(receipt.attempt_id,'running',session=launched['session_id'],data=launched,now=now)
                     decisions.append({'task':spec.id,'action':'launched','account':account,'attempt':receipt.attempt_id})
+                except DispatchFenceError as e:
+                    self.repo.abandon_pre_io(receipt.attempt_id,str(e),now=now)
+                    decisions.append({'task':spec.id,'action':'dispatch_fenced'})
+                    continue
                 except Exception as e:
                     self._cooldown(account,settings,now,type(e).__name__)
                     configs[account]=self.registry.get(account)

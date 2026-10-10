@@ -183,3 +183,9 @@
 - `tests/test_validation.py` → `supervisor/tests/test_validation.py`
 - `tests/test_views.py` → `supervisor/tests/test_views.py`
 - `tests/test_web.py` → `supervisor/tests/test_web.py`
+
+## Integration changes after import
+
+The canonical source snapshot additionally retains upstream `install.sh` so its installer regression test has the original script. It has not been executed against the host installation.
+
+Applied `fix/snooze-dispatch-fencing-20261010` changes to scheduler.py, tasks.py and their focused tests. See ../docs/implementation/2026-10-10-dispatch-fencing.md. The manifest above records the original source pin, before these reviewed integration changes.

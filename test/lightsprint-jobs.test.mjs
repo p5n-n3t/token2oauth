@@ -71,7 +71,7 @@ test("chat sends only the requested current message and clientMessageId", async 
     arguments: {
       method: "POST",
       path: `/api/agent-sessions/${SESSION_ID}/chat`,
-      body: { content: "Please review the current patch.", clientMessageId: "msg-20261010-1" },
+      body: { message: "Please review the current patch.", clientMessageId: "msg-20261010-1" },
     },
   });
 });

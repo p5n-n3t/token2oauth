@@ -10,6 +10,10 @@ from snooze.domain import TaskSpec, AttemptReceipt
 from snooze.migrations import migrate_state
 
 
+class DispatchFenceError(ValueError):
+    """A reserved provider mutation no longer passes its final local fence."""
+
+
 def normalized_scope(value):
     if not isinstance(value, str) or not value or len(value) > 512:
         raise ValueError('Invalid scope')
@@ -169,6 +173,72 @@ class TaskRepository:
     def active(self, project):
         with self.connection() as c: ids = [r['id'] for r in c.execute('SELECT id FROM attempts WHERE project=? AND released_at IS NULL', (project,))]
         return [self.attempt(id) for id in ids]
+
+    @contextmanager
+    def dispatch_fence(self, attempt_id, policy_revision, *, override_pause=False):
+        """Serialize the last local ownership/policy check with provider I/O.
+
+        The write transaction remains held while the caller performs exactly one
+        provider mutation. A persisted pause/stop therefore cannot be acknowledged
+        between this check and that mutation.
+        """
+        with self.connection(True) as c:
+            row = c.execute('SELECT * FROM attempts WHERE id=? AND released_at IS NULL', (attempt_id,)).fetchone()
+            if not row:
+                raise DispatchFenceError('Attempt ownership is no longer active')
+            project = c.execute('SELECT executor FROM projects WHERE id=?', (row['project'],)).fetchone()
+            if not project or project['executor'] != 'snooze':
+                raise DispatchFenceError('Snooze no longer owns dispatch for this project')
+            policy = c.execute('SELECT revision,data FROM policy_settings WHERE project=?', (row['project'],)).fetchone()
+            revision = policy['revision'] if policy else 0
+            settings = json.loads(policy['data']) if policy else {}
+            if revision != policy_revision:
+                raise DispatchFenceError('Dispatch policy revision changed')
+            if settings.get('emergency_stop', False) or (settings.get('pause_dispatch', True) and not override_pause):
+                raise DispatchFenceError('Dispatch is paused or stopped')
+            if not c.execute('SELECT 1 FROM provider_projects WHERE account=? AND project=?', (row['account'], row['project'])).fetchone():
+                raise DispatchFenceError('Provider account is no longer authorized for this project')
+            account = c.execute('SELECT data FROM provider_configs WHERE id=?', (row['account'],)).fetchone()
+            if not account:
+                raise DispatchFenceError('Provider account configuration is unavailable')
+
+            account_occupied = {}
+            for occupied in c.execute('SELECT account,COUNT(*) AS n FROM attempts WHERE released_at IS NULL AND id!=? GROUP BY account', (attempt_id,)):
+                account_occupied[occupied['account']] = occupied['n']
+            project_occupied = c.execute('SELECT COUNT(*) FROM attempts WHERE project=? AND released_at IS NULL AND id!=?', (row['project'], attempt_id)).fetchone()[0]
+            global_occupied = c.execute('SELECT COUNT(*) FROM attempts WHERE released_at IS NULL AND id!=?', (attempt_id,)).fetchone()[0]
+            model_occupied = {}
+            for occupied in c.execute('SELECT data FROM attempts WHERE project=? AND released_at IS NULL AND id!=?', (row['project'], attempt_id)):
+                model = json.loads(occupied['data']).get('requested_model')
+                if model:
+                    model_occupied[model] = model_occupied.get(model, 0) + 1
+            attempt = dict(row)
+            attempt['data'] = json.loads(row['data'])
+            attempt['scopes'] = json.loads(row['scopes'])
+            yield {
+                'attempt': attempt,
+                'settings': settings,
+                'revision': revision,
+                'account_config': json.loads(account['data']),
+                'account_occupied': account_occupied,
+                'project_occupied': project_occupied,
+                'global_occupied': global_occupied,
+                'model_occupied': model_occupied,
+            }
+
+    def abandon_pre_io(self, attempt_id, reason, now=None):
+        """Release only a local reservation proven not to have reached a provider."""
+        when = time.time() if now is None else now
+        with self.connection(True) as c:
+            row = c.execute('SELECT * FROM attempts WHERE id=? AND released_at IS NULL', (attempt_id,)).fetchone()
+            if not row or row['state'] not in ('reserved', 'starting') or row['session'] is not None:
+                return False
+            data = json.loads(row['data'])
+            data['dispatch_fence_rejected'] = str(reason)[:300]
+            c.execute('UPDATE attempts SET state="blocked",released_at=?,data=? WHERE id=?', (when, json.dumps(data), attempt_id))
+            c.execute('UPDATE tasks SET state="blocked",updated_at=?,revision=revision+1 WHERE id=?', (when, row['task']))
+            self.event(c, row['project'], 'owner_released', {'dispatch_not_started': True, 'reason': str(reason)[:300]}, row['task'], attempt_id, when)
+            return True
 
     def update_attempt(self, id, state, *, session=None, data=None, now=None, expected_revision=None):
         allowed = {'reserved','starting','running','awaiting_output','validating','complete','failed','cancel_pending','cancelled','ambiguous','blocked'}

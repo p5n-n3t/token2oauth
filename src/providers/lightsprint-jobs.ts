@@ -325,7 +325,7 @@ export class LightSprintJobsAdapter {
     validateId(sessionId, "sessionId");
     validateText(message, "message", MAX_MESSAGE_LENGTH);
     if (typeof clientMessageId !== "string" || !CLIENT_MESSAGE_ID_RE.test(clientMessageId)) throw new TypeError("clientMessageId is invalid");
-    return this.api("POST", `/api/agent-sessions/${sessionId}/chat`, { content: message, clientMessageId });
+    return this.api("POST", `/api/agent-sessions/${sessionId}/chat`, { message, clientMessageId });
   }
 
   cancelTurn(sessionId: string): Promise<JobResult> {

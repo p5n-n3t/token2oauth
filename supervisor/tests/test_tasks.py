@@ -66,6 +66,21 @@ class TaskTests(unittest.TestCase):
             self.repo.reserve('a', 'other', ('record:1',), 10000)
         self.assertTrue(self.repo.release(receipt.attempt_id, {'confirmed_inactive': True}))
 
+    def test_pre_io_fence_rejection_releases_only_unlaunched_reservation(self):
+        self.task('a')
+        receipt=self.repo.reserve('a','account',('record:1',),100)
+        self.repo.update_attempt(receipt.attempt_id,'starting',now=101)
+        self.assertTrue(self.repo.abandon_pre_io(receipt.attempt_id,'dispatch paused',now=102))
+        self.assertEqual(self.repo.active('p'),[])
+        self.assertEqual(self.repo.get('a')['state'],'blocked')
+
+    def test_pre_io_release_refuses_ambiguous_remote_ownership(self):
+        self.task('a')
+        receipt=self.repo.reserve('a','account',('record:1',),100)
+        self.repo.update_attempt(receipt.attempt_id,'ambiguous',now=101)
+        self.assertFalse(self.repo.abandon_pre_io(receipt.attempt_id,'unknown result',now=102))
+        self.assertEqual(len(self.repo.active('p')),1)
+
     def test_handover_requires_attestation_and_no_unreconciled_scope(self):
         with self.assertRaises(ValueError):self.repo.set_executor('p','snooze')
         self.task('owned')

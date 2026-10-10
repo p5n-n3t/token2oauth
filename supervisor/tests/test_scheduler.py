@@ -110,6 +110,105 @@ class SchedulerTests(unittest.TestCase):
         self.scheduler.tick('p',100)
         self.assertEqual(self.adapter.launches,[])
 
+    def _change_policy_after_reservation(self, values):
+        reserve=self.repo.reserve
+        def racing(*args,**kwargs):
+            receipt=reserve(*args,**kwargs)
+            self.scheduler.configure('p',values)
+            return receipt
+        self.repo.reserve=racing
+
+    def test_pause_after_reservation_fences_provider_io(self):
+        self.add(); self._change_policy_after_reservation({'pause_dispatch':True})
+        report=self.scheduler.tick('p',100)
+        self.assertEqual(self.adapter.launches,[])
+        self.assertEqual(self.repo.active('p'),[])
+        self.assertEqual(self.repo.get('t')['state'],'blocked')
+        self.assertIn({'task':'t','action':'dispatch_fenced'},report.decisions)
+
+    def test_emergency_stop_after_reservation_fences_provider_io(self):
+        self.add(); self._change_policy_after_reservation({'emergency_stop':True})
+        report=self.scheduler.tick('p',100)
+        self.assertEqual(self.adapter.launches,[])
+        self.assertEqual(self.repo.active('p'),[])
+        self.assertIn({'task':'t','action':'dispatch_fenced'},report.decisions)
+
+    def test_revision_change_after_reservation_fences_provider_io(self):
+        self.add(); self._change_policy_after_reservation({'interval':301})
+        report=self.scheduler.tick('p',100)
+        self.assertEqual(self.adapter.launches,[])
+        self.assertEqual(self.repo.active('p'),[])
+        self.assertIn({'task':'t','action':'dispatch_fenced'},report.decisions)
+
+    def test_persisted_stop_waits_for_an_already_fenced_provider_call(self):
+        self.add(); entered=threading.Event(); release=threading.Event(); stop_done=threading.Event()
+        def launch(task,attempt):
+            entered.set(); release.wait(2)
+            self.adapter.launches.append(attempt['idempotency_key'])
+            return {'session_id':'session-'+task.id,'state':'running'}
+        self.adapter.launch=launch
+        cycle=threading.Thread(target=self.scheduler.tick,args=('p',100)); cycle.start()
+        self.assertTrue(entered.wait(2))
+        def stop():
+            self.scheduler.configure('p',{'emergency_stop':True})
+            stop_done.set()
+        stopper=threading.Thread(target=stop); stopper.start()
+        self.assertFalse(stop_done.wait(.05))
+        release.set(); cycle.join(2); stopper.join(2)
+        self.assertFalse(cycle.is_alive()); self.assertFalse(stopper.is_alive())
+        self.assertTrue(stop_done.is_set()); self.assertEqual(len(self.adapter.launches),1)
+
+    def test_stop_after_recovery_reservation_blocks_resume_and_requires_reconcile(self):
+        self._active_failed_attempt()
+        update=self.repo.update_attempt
+        def racing(attempt_id,state,**kwargs):
+            result=update(attempt_id,state,**kwargs)
+            if state=='ambiguous' and kwargs.get('data',{}).get('resume_message_id'):
+                self.scheduler.configure('p',{'emergency_stop':True})
+            return result
+        self.repo.update_attempt=racing
+        report=self.scheduler.tick('p',101)
+        self.assertEqual(self.adapter.resumes,[])
+        self.assertEqual(self.repo.active('p')[0]['state'],'ambiguous')
+        self.assertIn({'task':'t','action':'recovery_fenced'},report.decisions)
+
+    def test_ambiguous_resume_is_reconciled_before_another_mutation(self):
+        self._active_failed_attempt()
+        def uncertain(session,attempt):
+            self.adapter.resumes.append(session)
+            raise TimeoutError('acceptance uncertain')
+        self.adapter.resume=uncertain
+        self.scheduler.tick('p',101)
+        self.scheduler.tick('p',102)
+        self.assertEqual(self.adapter.resumes,['session-t'])
+        self.assertEqual(self.repo.active('p')[0]['state'],'ambiguous')
+
+    def _active_failed_attempt(self):
+        self.add(); self.scheduler.tick('p',100); self.adapter.state='failed'
+
+    def test_disabled_account_is_revalidated_before_resume(self):
+        self._active_failed_attempt()
+        self.registry.upsert_public_config('a',{'enabled':False},trusted=True)
+        report=self.scheduler.tick('p',101)
+        self.assertEqual(self.adapter.resumes,[])
+        self.assertEqual(self.repo.active('p')[0]['state'],'running')
+        self.assertIn({'task':'t','action':'recovery_ineligible'},report.decisions)
+
+    def test_revoked_account_scope_is_revalidated_before_resume(self):
+        self._active_failed_attempt()
+        with self.repo.connection(True) as c:
+            c.execute('DELETE FROM provider_projects WHERE account=? AND project=?',('a','p'))
+        report=self.scheduler.tick('p',101)
+        self.assertEqual(self.adapter.resumes,[])
+        self.assertIn({'task':'t','action':'account_scope_unverified'},report.decisions)
+
+    def test_exhausted_quota_reserve_is_revalidated_before_resume(self):
+        self._active_failed_attempt()
+        self.registry.upsert_public_config('a',{'quota_override':{'value':0,'unit':'credits'},'reserve':1},trusted=True)
+        report=self.scheduler.tick('p',101)
+        self.assertEqual(self.adapter.resumes,[])
+        self.assertIn({'task':'t','action':'recovery_ineligible'},report.decisions)
+
     def test_broken_account_cools_down_without_blocking_healthy_work(self):
         self.registry.upsert_public_config('a',{'capacity':4})
         self.registry.upsert_public_config('b',{'adapter':'ssh','models':['small'],'efforts':['low'],'capacity':2,'health':'healthy','allow_unknown_quota':True},trusted=True,project_id='p')
