@@ -133,6 +133,8 @@ export function isAllowedSupervisorRoute(method: string, route: string): boolean
     allowedQuery = ["projectId", "offset", "limit"];
   } else if (path === "/admin/api/v1/events" && method === "GET") {
     allowedQuery = ["after", "limit"];
+  } else if (path === "/v1/inbox" && method === "GET") {
+    allowedQuery = ["projectId", "after", "limit"];
   } else if (path === "/admin/api/v1/control" && method === "POST") {
     return parsed.search === "";
   } else if (path === "/v1/operations/claim" && method === "POST") {
@@ -143,11 +145,13 @@ export function isAllowedSupervisorRoute(method: string, route: string): boolean
     const result = path.match(/^\/v1\/operations\/([A-Za-z0-9._:-]{1,128})\/result$/);
     const ownedResult = path.match(/^\/v1\/assignments\/([A-Za-z0-9._:-]{1,128})\/results$/);
     const cancel = path.match(/^\/v1\/assignments\/([A-Za-z0-9._:-]{1,128})\/cancel$/);
+    const inboxAck = path.match(/^\/v1\/inbox\/((?:repo|job):[1-9][0-9]{0,18})\/ack$/);
     if (approval && isSafeId(approval[1]) && method === "POST") return parsed.search === "";
     if (assignment && isSafeId(assignment[1]) && method === "GET") return parsed.search === "";
     if (result && isSafeId(result[1]) && method === "POST") return parsed.search === "";
     if (ownedResult && isSafeId(ownedResult[1]) && method === "GET") return parsed.search === "";
     if (cancel && isSafeId(cancel[1]) && method === "POST") return parsed.search === "";
+    if (inboxAck && method === "POST") return parsed.search === "";
     return false;
   }
 
@@ -157,8 +161,11 @@ export function isAllowedSupervisorRoute(method: string, route: string): boolean
     seen.add(key);
     if (key === "projectId" && !isSafeId(value)) return false;
     if (key === "offset" && (!/^\d{1,9}$/.test(value) || Number(value) > 1_000_000)) return false;
-    if (key === "limit" && (!/^\d{1,3}$/.test(value) || Number(value) < 1 || Number(value) > (path.endsWith("/events") ? 200 : 50))) return false;
-    if (key === "after" && !/^\d{1,16}$/.test(value)) return false;
+    const maxLimit = path.endsWith("/events") ? 200 : path === "/v1/inbox" ? 100 : 50;
+    if (key === "limit" && (!/^\d{1,3}$/.test(value) || Number(value) < 1 || Number(value) > maxLimit)) return false;
+    if (key === "after" && path === "/admin/api/v1/events" && !/^\d{1,16}$/.test(value)) return false;
+    if (key === "after" && path === "/v1/inbox" && (value.length > 128 || /[\u0000-\u001f\u007f]/.test(value))) return false;
+    if (path === "/v1/inbox" && key === "limit" && Number(value) > 100) return false;
   }
   return true;
 }

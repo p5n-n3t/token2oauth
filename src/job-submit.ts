@@ -1,4 +1,4 @@
-export const JOB_TOOLS = ["job_submit", "job_status", "job_workers", "job_results", "job_control", "job_inbox"] as const;
+export const JOB_TOOLS = ["job_submit", "job_status", "job_workers", "job_results", "job_control", "job_inbox", "job_inbox_ack"] as const;
 export type JobToolName = typeof JOB_TOOLS[number];
 export type JobScope = "jobs:read" | "jobs:write";
 
@@ -152,7 +152,10 @@ export const JOB_TOOL_DEFINITIONS = [
   tool("job_workers", "Read bounded worker/account observations for an authorized project.", { projectId: jobKey }, ["projectId"]),
   tool("job_results", "Read bounded results for an authorized job/task.", { projectId: jobKey, jobId: jobKey, taskId: jobKey }, ["projectId", "jobId"]),
   tool("job_control", "Apply an allowlisted durable pause, stop, resume, or cancellation action.", { projectId: jobKey, action: { type: "string", enum: ["pause_dispatch", "resume_dispatch", "emergency_stop", "cancel_job"] }, jobId: jobKey }, ["projectId", "action"]),
-  tool("job_inbox", "Read the caller's bounded durable incident inbox.", { projectId: jobKey, after: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 100 } }, ["projectId"]),
+  tool("job_inbox", "Read the caller's bounded durable incident inbox.", { projectId: jobKey, after: { type: "string", maxLength: 128 }, limit: { type: "integer", minimum: 1, maximum: 100 } }, ["projectId"]),
+  tool("job_inbox_ack", "Acknowledge one event in the caller's durable project inbox.", {
+    projectId: jobKey, eventId: { type: "string", pattern: "^(?:repo|job):[1-9][0-9]{0,18}$", maxLength: 24 },
+  }, ["projectId", "eventId"]),
 ] as const;
 
 export function isJobToolName(value: unknown): value is JobToolName {
@@ -160,7 +163,7 @@ export function isJobToolName(value: unknown): value is JobToolName {
 }
 
 export function requiredJobScope(name: JobToolName): JobScope {
-  return name === "job_submit" || name === "job_control" ? "jobs:write" : "jobs:read";
+  return name === "job_submit" || name === "job_control" || name === "job_inbox_ack" ? "jobs:write" : "jobs:read";
 }
 
 export function validateJobToolArguments(name: JobToolName, value: unknown): unknown {
@@ -169,6 +172,7 @@ export function validateJobToolArguments(name: JobToolName, value: unknown): unk
   const allowed: Record<Exclude<JobToolName, "job_submit">, string[]> = {
     job_status: ["projectId", "jobId"], job_workers: ["projectId"], job_results: ["projectId", "jobId", "taskId"],
     job_control: ["projectId", "action", "jobId"], job_inbox: ["projectId", "after", "limit"],
+    job_inbox_ack: ["projectId", "eventId"],
   };
   only(value, allowed[name], name);
   id(value.projectId, "projectId");
@@ -179,8 +183,11 @@ export function validateJobToolArguments(name: JobToolName, value: unknown): unk
     if (value.action === "cancel_job") id(value.jobId, "jobId");
   }
   if (name === "job_inbox") {
-    if (value.after !== undefined && (!Number.isSafeInteger(value.after) || Number(value.after) < 0)) throw new JobInputError("after must be a nonnegative integer");
+    if (value.after !== undefined && (typeof value.after !== "string" || value.after.length > 128 || /[\u0000-\u001f\u007f]/.test(value.after))) throw new JobInputError("after must be a bounded opaque cursor string");
     if (value.limit !== undefined && (!Number.isInteger(value.limit) || Number(value.limit) < 1 || Number(value.limit) > 100)) throw new JobInputError("limit must be between 1 and 100");
+  }
+  if (name === "job_inbox_ack" && (typeof value.eventId !== "string" || !/^(?:repo|job):[1-9][0-9]{0,18}$/.test(value.eventId))) {
+    throw new JobInputError("eventId must be a safe durable inbox event ID");
   }
   return value;
 }

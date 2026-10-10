@@ -55,6 +55,20 @@ function usageProjection(value: unknown): SupervisorUsage | undefined {
   return Object.values(usage).some((item) => item !== undefined) ? usage : undefined;
 }
 function safeId(value: unknown): value is string { return typeof value === "string" && ID.test(value); }
+function inboxEvent(value: unknown): Record<string, unknown> | undefined {
+  if (!object(value) || !Number.isSafeInteger(value.id) || Number(value.id) < 1 ||
+      typeof value.eventId !== "string" || !/^(?:repo|job):[1-9][0-9]{0,18}$/.test(value.eventId) ||
+      typeof value.at !== "number" || !Number.isFinite(value.at) || value.at < 0 ||
+      typeof value.type !== "string" || !/^[A-Za-z0-9_.:@/-]{1,256}$/.test(value.type) ||
+      typeof value.acknowledged !== "boolean") return undefined;
+  const boundedOptional = (input: unknown, max: number) => input === null ? null :
+    typeof input === "string" && input.length <= max && /^[A-Za-z0-9_.:@/-]{1,256}$/.test(input) ? input : null;
+  const assignmentId = boundedOptional(value.assignmentId, 128);
+  const taskId = boundedOptional(value.taskId, 256);
+  const state = boundedOptional(value.state, 64);
+  return { id: value.id, eventId: value.eventId, at: value.at, type: value.type,
+    assignmentId, taskId, state, acknowledged: value.acknowledged };
+}
 function assertKeys(value: Record<string, unknown>, keys: string[], where: string): void {
   if (Object.keys(value).some((key) => !keys.includes(key))) throw new Error(`Invalid supervisor config fields: ${where}`);
 }
@@ -280,6 +294,25 @@ export class SupervisorRuntime implements SupervisorBackend {
       });
       return boundedJson({ projectId: project.projectId, workers, maxWorkers: this.config.maxWorkers, dispatchEnabled: true });
     }
+    if (name === "job_inbox") {
+      const after = (args.after ?? "0") as string;
+      const limit = (args.limit ?? 50) as number;
+      const route = `/v1/inbox?projectId=${encodeURIComponent(project.projectId)}&after=${encodeURIComponent(after)}&limit=${limit}`;
+      const raw = parseJson(await this.bridge.request("GET", route, undefined, owner));
+      if (raw.projectId !== project.projectId || !Array.isArray(raw.events) || typeof raw.hasMore !== "boolean" ||
+          !(raw.cursor === null || typeof raw.cursor === "string" && raw.cursor.length <= 128 && !/[\u0000-\u001f\u007f]/.test(raw.cursor))) {
+        throw new JobInputError("inbox response is invalid");
+      }
+      const events = raw.events.slice(0, limit).map(inboxEvent);
+      if (events.some((event) => event === undefined)) throw new JobInputError("inbox event is invalid");
+      return boundedJson({ projectId: project.projectId, events, cursor: raw.cursor, hasMore: raw.hasMore });
+    }
+    if (name === "job_inbox_ack") {
+      const eventId = args.eventId as string;
+      const raw = parseJson(await this.bridge.request("POST", `/v1/inbox/${eventId}/ack`, { projectId: project.projectId }, owner));
+      if (raw.eventId !== eventId || raw.acknowledged !== true) throw new JobInputError("inbox event is unavailable");
+      return boundedJson({ projectId: project.projectId, eventId, acknowledged: true });
+    }
     if (name === "job_control" && args.action === "cancel_job") {
       const jobId = String(args.jobId);
       const row = parseJson(await this.bridge.request("GET", `/admin/api/v1/assignments/${jobId}`, undefined, owner));
@@ -287,7 +320,7 @@ export class SupervisorRuntime implements SupervisorBackend {
       return boundedJson(await this.bridge.request("POST", `/v1/assignments/${jobId}/cancel`, { expectedRevision: row.revision }, owner));
     }
     // R21's event and global control endpoints have no project-scoped read/write contract.
-    throw new JobInputError(name === "job_inbox" ? "project-scoped inbox is unavailable in the current bridge contract" : "global supervisor controls are unavailable through project-scoped MCP");
+    throw new JobInputError("global supervisor controls are unavailable through project-scoped MCP");
   }
 
   async readAdmin(projectId: string): Promise<unknown> {
