@@ -31,6 +31,7 @@ OUTPUT_KEYS = {
     "text": {"kind", "maxBytes", "format", "expectedMarker"},
     "coding-artifact": {"kind", "repository", "allowedPaths", "requirePullRequest"},
 }
+ACTIVE_TASK_STATES = ("reserved", "starting", "running", "awaiting_output", "ambiguous", "cancel_pending")
 
 
 def _text(value, name, maximum=256):
@@ -329,7 +330,38 @@ class JobRegistry:
                 "quota": body["quota"], "localCapacity": capacity, "registeredSessions": clean_sessions}
         when = time.time() if now is None else now
         with self.connection(write=True) as db:
-            current = db.execute("SELECT revision FROM registered_accounts WHERE account_id=?", (account_id,)).fetchone()
+            current = db.execute("SELECT revision,data FROM registered_accounts WHERE account_id=?", (account_id,)).fetchone()
+            # A busy session is an identity tuple, not just an ID. Keep its owning
+            # account, workspace, and model stable until every reservation releases.
+            old_sessions = {item["id"]: item for item in json.loads(current["data"])["registeredSessions"]} if current else {}
+            requested_sessions = {item["id"]: item for item in clean_sessions}
+            for session_id, old in old_sessions.items():
+                busy = db.execute(
+                    "SELECT 1 FROM job_tasks WHERE session_id=? AND state IN (?,?,?,?,?,?) LIMIT 1",
+                    (session_id, *ACTIVE_TASK_STATES),
+                ).fetchone()
+                if not busy and self.repository is not None:
+                    busy = db.execute("SELECT 1 FROM attempts WHERE session=? AND released_at IS NULL LIMIT 1", (session_id,)).fetchone()
+                if busy and requested_sessions.get(session_id) != old:
+                    raise ValueError("Cannot change a registered session while it is reserved")
+            if self.repository is not None:
+                for session_id, requested in requested_sessions.items():
+                    live = db.execute("SELECT account FROM attempts WHERE session=? AND released_at IS NULL LIMIT 1", (session_id,)).fetchone()
+                    if live and (live["account"] != account_id or old_sessions.get(session_id) != requested):
+                        raise ValueError("Cannot rebind a reserved session registration")
+            # Do not let two account registrations claim one live session identity.
+            for session_id in requested_sessions:
+                for other in db.execute("SELECT account_id,data FROM registered_accounts WHERE account_id<>?", (account_id,)):
+                    other_sessions = json.loads(other["data"])["registeredSessions"]
+                    if any(item["id"] == session_id for item in other_sessions):
+                        busy = db.execute(
+                            "SELECT 1 FROM job_tasks WHERE session_id=? AND state IN (?,?,?,?,?,?) LIMIT 1",
+                            (session_id, *ACTIVE_TASK_STATES),
+                        ).fetchone()
+                        if not busy and self.repository is not None:
+                            busy = db.execute("SELECT 1 FROM attempts WHERE session=? AND released_at IS NULL LIMIT 1", (session_id,)).fetchone()
+                        if busy and old_sessions.get(session_id) != requested_sessions[session_id]:
+                            raise ValueError("Cannot rebind a reserved session to another account")
             revision = current["revision"] + 1 if current else 1
             db.execute("INSERT INTO registered_accounts(account_id,data,revision,updated_at) VALUES(?,?,?,?) "
                        "ON CONFLICT(account_id) DO UPDATE SET data=excluded.data,revision=excluded.revision,updated_at=excluded.updated_at",
@@ -508,6 +540,22 @@ class JobRegistry:
             if spec["execution"]["mode"] == "existing-session":
                 pinned = spec["execution"]["accountId"]
                 available = [account for account in available if account == pinned]
+                session_id = spec["execution"]["sessionId"]
+                session_occupancy = db.execute(
+                    "SELECT COUNT(*) FROM job_tasks WHERE session_id=? AND state IN (?,?,?,?,?,?)",
+                    (session_id, *ACTIVE_TASK_STATES),
+                ).fetchone()[0]
+                # This check is inside BEGIN IMMEDIATE alongside the reservation,
+                # so claims from other projects/accounts cannot win concurrently.
+                external_session_occupancy = 0
+                if self.repository is not None:
+                    for attempt in db.execute("SELECT id,data FROM attempts WHERE session=? AND released_at IS NULL", (session_id,)):
+                        identity = json.loads(attempt["data"] or "{}")
+                        if identity.get("r21Assignment") == row["id"] and identity.get("r21TaskId") == row["task_id"]:
+                            continue
+                        external_session_occupancy += 1
+                if session_occupancy or external_session_occupancy:
+                    continue
             if not available:
                 continue
             if self._has_scope_conflict(db, row["project"], spec["scopeKeys"], row["id"], row["task_id"]):
@@ -597,13 +645,18 @@ class JobRegistry:
                 return None
             task_spec = json.loads(task_row["body"])
             account_data, _ = self._account(db, op["account"], task_spec["execution"]["sessionId"])
-            occupied = db.execute("SELECT COUNT(*) FROM job_tasks WHERE selected_account=? AND NOT (assignment=? AND task_id=?) AND state IN ('reserved','starting','running','awaiting_output','ambiguous','cancel_pending')",
-                                  (op["account"], op["assignment"], op["task_id"])).fetchone()[0]
+            occupied = db.execute("SELECT COUNT(*) FROM job_tasks WHERE selected_account=? AND NOT (assignment=? AND task_id=?) AND state IN (?,?,?,?,?,?)",
+                                  (op["account"], op["assignment"], op["task_id"], *ACTIVE_TASK_STATES)).fetchone()[0]
             if occupied >= account_data["localCapacity"]:
+                return None
+            session_id = task_spec["execution"]["sessionId"]
+            session_occupancy = db.execute("SELECT COUNT(*) FROM job_tasks WHERE session_id=? AND NOT (assignment=? AND task_id=?) AND state IN (?,?,?,?,?,?)",
+                                           (session_id, op["assignment"], op["task_id"], *ACTIVE_TASK_STATES)).fetchone()[0]
+            if session_occupancy:
                 return None
             if self.repository is not None:
                 external = 0
-                for attempt_row in db.execute("SELECT data FROM attempts WHERE account=? AND released_at IS NULL", (op["account"],)):
+                for attempt_row in db.execute("SELECT data FROM attempts WHERE session=? AND released_at IS NULL", (session_id,)):
                     identity = json.loads(attempt_row["data"] or "{}")
                     if identity.get("r21Assignment") == op["assignment"] and identity.get("r21TaskId") == op["task_id"]:
                         continue
