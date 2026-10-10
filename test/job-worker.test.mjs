@@ -9,6 +9,13 @@ const op = (id, accountId, overrides = {}) => ({
     instructions: `work ${id}`, clientMessageId: `client-${id}`, dispatchAt: "2026-10-10T00:00:00Z",
   }, ...overrides,
 });
+const pythonObservation = (id, accountId, dispatchAt) => ({
+  operationId: id, attemptId: `attempt-${id}`, generation: 1, selectedAccountId: accountId,
+  kind: "observe_session", sessionId: `session-${accountId}`, providerTaskId: "provider-task",
+  input: { sessionId: `session-${accountId}`, clientMessageId: `client-${id}`, dispatchAt,
+    expectedMarker: "EXPECTED", providerTaskId: "provider-task", stackId: "stack-1", provider: "auto",
+    workspace: "workspace-1", model: "gpt-6-luna" },
+});
 function adapter(accountId, overrides = {}) {
   return {
     accountId,
@@ -106,38 +113,81 @@ test("shutdown aborts a pending claim and does not dispatch it when it returns",
 });
 
 test("observe_session ignores assistant messages older than durable dispatchAt", async () => {
-  const observation = { ...op("observe", "account-a"), kind: "observe_session", input: { dispatchAt: "2026-10-10T00:00:00Z" } };
+  const dispatchAt = Date.parse("2026-10-10T00:00:00Z") / 1_000;
+  const observation = pythonObservation("observe", "account-a", dispatchAt);
   let posted;
   const bridge = { async request(_method, route, body) {
     if (route.endsWith("/claim")) return observation;
     posted = body; return {};
   } };
   const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id, {
-    sessionTranscript: async () => ok(id, { messages: [
-      { role: "assistant", text: "old", createdAt: "2026-10-09T23:59:59Z" },
-      { role: "user", text: "new user", createdAt: "2026-10-10T00:01:00Z" },
-    ] }),
+    sessionTranscript: async () => ok(id, { shape: "messages", latestAssistantIndex: 0, latestAssistantComplete: true,
+      messages: [{ role: "assistant", content: "old", timestamp: "2026-10-09T23:59:59Z", complete: true }] }),
   }), isAccountEligible: () => true, workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
   worker.start(); await until(() => posted); await worker.stop();
-  assert.equal(posted.result.status, "unknown");
+  assert.equal(posted.result.status, "idle");
+  assert.equal("assistantText" in posted.result, false);
 });
 
 test("observe_session returns only the newest bounded assistant result after dispatchAt", async () => {
-  const observation = { ...op("fresh-observe", "account-a"), kind: "observe_session", input: { dispatchAt: "2026-10-10T00:00:00Z" } };
+  const dispatchAt = Date.parse("2026-10-10T00:00:00Z") / 1_000;
+  const observation = pythonObservation("fresh-observe", "account-a", dispatchAt);
   let posted;
   const bridge = { async request(_method, route, body) {
     if (route.endsWith("/claim")) return observation;
     posted = body; return {};
   } };
   const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id, {
-    sessionTranscript: async () => ok(id, { messages: [
-      { role: "assistant", text: "first", createdAt: "2026-10-10T00:01:00Z" },
-      { role: "assistant", text: "latest", createdAt: "2026-10-10T00:02:00Z" },
-    ] }),
+    sessionTranscript: async () => ok(id, { shape: "messages", latestAssistantIndex: 1, latestAssistantComplete: true,
+      messages: [
+        { role: "assistant", content: "first", timestamp: "2026-10-10T00:01:00Z", complete: true },
+        { role: "assistant", content: [{ type: "text", text: "latest" }], timestamp: "2026-10-10T00:02:00Z", complete: true },
+      ] }),
   }), isAccountEligible: () => true, workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
   worker.start(); await until(() => posted); await worker.stop();
   assert.equal(posted.result.assistantText, "latest");
-  assert.equal(posted.result.assistantAt, "2026-10-10T00:02:00.000Z");
+  assert.equal(posted.outcome, "accepted");
+  assert.equal(posted.result.status, "idle");
+  assert.equal(posted.result.assistantAt, Date.parse("2026-10-10T00:02:00Z") / 1_000);
+  assert.equal(typeof posted.result.assistantAt, "number");
+});
+
+test("observe_session does not fall back to an older complete answer when the latest is incomplete", async () => {
+  const dispatchAt = Date.parse("2026-10-10T00:00:00Z") / 1_000;
+  for (const [index, latestAssistantComplete, messageComplete] of [[0, false, false], [1, true, false], [2, false, true]]) {
+    let posted;
+    const observation = pythonObservation(`incomplete-latest-${index}`, "account-a", dispatchAt);
+    const bridge = { async request(_method, route, body) {
+      if (route.endsWith("/claim")) return observation;
+      posted = body; return {};
+    } };
+    const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id, {
+      sessionTranscript: async () => ok(id, { shape: "messages", latestAssistantIndex: 1, latestAssistantComplete,
+        incomplete: true, messages: [
+          { role: "assistant", content: "OLDER VALID MARKER", timestamp: dispatchAt + 5, complete: true },
+          { role: "assistant", contentOmitted: "oversized", timestamp: dispatchAt + 10, complete: messageComplete },
+        ] }),
+    }), isAccountEligible: () => true, workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
+    worker.start(); await until(() => posted); await worker.stop();
+    assert.equal(posted.outcome, "accepted");
+    assert.equal(posted.result.status, "idle");
+    assert.equal("assistantText" in posted.result, false);
+    assert.equal("assistantAt" in posted.result, false);
+  }
+});
+
+test("observe_session rejects an invalid durable dispatch timestamp", async () => {
+  const observation = pythonObservation("bad-dispatch-time", "account-a", "yesterday-ish");
+  let posted;
+  const bridge = { async request(_method, route, body) {
+    if (route.endsWith("/claim")) return observation;
+    posted = body; return {};
+  } };
+  const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id), isAccountEligible: () => true,
+    workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
+  worker.start(); await until(() => posted); await worker.stop();
+  assert.equal(posted.outcome, "rejected");
+  assert.equal(posted.errorClass, "invalid_dispatch_timestamp");
 });
 
 test("fresh create_task remains disabled unless explicitly enabled", async () => {
