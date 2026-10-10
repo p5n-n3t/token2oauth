@@ -1,6 +1,9 @@
+import { randomBytes } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { adminEpoch, parseCookies, AdminSessions } from "./admin-session.js";
 import { validateJobToolArguments, type JobToolName } from "./job-submit.js";
+import { redact } from "./telemetry.js";
+import { normalizeSupervisorSnapshot, renderSupervisorDashboard, renderSupervisorEventFeed } from "./supervisor-ui.js";
 import type { StateStore } from "./store.js";
 
 export interface SupervisorCaller {
@@ -9,9 +12,10 @@ export interface SupervisorCaller {
   projectId: string;
 }
 
-/** Semantic injection seam. A concrete adapter must delegate to the durable R13/R14 bridge. */
+/** Semantic injection seam. A concrete adapter delegates to the durable supervisor bridge. */
 export interface SupervisorBackend {
   callTool(name: JobToolName, args: unknown, caller: SupervisorCaller): Promise<unknown>;
+  /** Project-scoped authoritative admin snapshot. */
   readAdmin?(projectId: string): Promise<unknown>;
   controlAdmin?(input: { projectId: string; action: "pause_dispatch" | "resume_dispatch" | "emergency_stop"; expectedRevision: number }): Promise<unknown>;
 }
@@ -29,19 +33,81 @@ export class SupervisorApi {
     if (!this.backend) throw new SupervisorUnavailable();
     const args = validateJobToolArguments(name, raw) as Record<string, unknown>;
     const projectId = String(args.projectId);
-    // The bridge must authorize this OAuth client against this exact project and
-    // enforce ownership on all job/task/result/inbox reads and controls.
     return this.backend.callTool(name, args, { clientId, projectId });
+  }
+}
+
+const MAX_SNAPSHOT_BYTES = 512 * 1024;
+const severityLevels = new Set(["all", "debug", "info", "notice", "warning", "error", "critical", "unknown"]);
+
+function setSecurityHeaders(_req: Request, res: Response, next: NextFunction): void {
+  const nonce = randomBytes(18).toString("base64");
+  res.locals.supervisorNonce = nonce;
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Content-Security-Policy", `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'`);
+  next();
+}
+
+function queryValue(req: Request, key: string, max: number): string {
+  const value = req.query[key];
+  return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function dashboardOptions(req: Request, nonce: string, csrfToken: string | undefined, feedUrl?: string, projectId?: string) {
+  const severity = queryValue(req, "severity", 16).toLowerCase();
+  const pause = queryValue(req, "pause", 16);
+  return {
+    title: projectId ? `Workforce control desk · ${projectId}` : "Workforce control desk",
+    search: queryValue(req, "search", 120),
+    severity: severityLevels.has(severity) ? severity : "all",
+    pause: pause === "paused" || pause === "active" ? pause : "all",
+    maxItems: 60,
+    nonce,
+    csrfToken: csrfToken ?? "",
+    liveFeedUrl: feedUrl,
+  } as const;
+}
+
+function safeAdminSnapshot(value: unknown): { value: unknown; bytes: number } | undefined {
+  try {
+    const cleaned = redact(value, { maxDepth: 8, maxStringLength: 1200, maxKeys: 80, maxArrayItems: 199 });
+    const encoded = JSON.stringify(cleaned);
+    if (encoded === undefined) return undefined;
+    const bytes = Buffer.byteLength(encoded);
+    return bytes <= MAX_SNAPSHOT_BYTES ? { value: cleaned, bytes } : undefined;
+  } catch {
+    return undefined;
   }
 }
 
 export function createSupervisorAdminRouter(store: StateStore, sessions: AdminSessions, backend?: SupervisorBackend) {
   const router = express.Router();
-  const requireAdmin = async (req: Request, res: Response, next: NextFunction) => {
+  // This router is mounted before AdminUi, so it owns the security boundary for every route it adds.
+  router.use("/admin/api/v1/supervisor", setSecurityHeaders);
+  router.use("/admin/supervisor", setSecurityHeaders);
+
+  const adminSession = async (req: Request, res: Response, next: NextFunction) => {
     const state = await store.load();
     const token = parseCookies(req.headers.cookie)["t2o_admin"];
     if (!sessions.valid(token, adminEpoch(state))) return res.status(401).json({ error: "admin_session_required" });
     res.locals.supervisorAdminToken = token;
+    res.locals.supervisorCsrf = sessions.csrfToken(token);
+    next();
+  };
+  const requireAdmin = adminSession;
+  const requireAdminPage = async (req: Request, res: Response, next: NextFunction) => {
+    const state = await store.load();
+    const token = parseCookies(req.headers.cookie)["t2o_admin"];
+    if (!sessions.valid(token, adminEpoch(state))) {
+      const nextPath = req.originalUrl;
+      return res.redirect(302, "/admin/login?next=" + encodeURIComponent(nextPath));
+    }
+    res.locals.supervisorAdminToken = token;
+    res.locals.supervisorCsrf = sessions.csrfToken(token);
     next();
   };
   const requireCsrf = (req: Request, res: Response, next: NextFunction) => {
@@ -49,17 +115,77 @@ export function createSupervisorAdminRouter(store: StateStore, sessions: AdminSe
     if (!token || !sessions.verifyCsrf(token, req.header("x-csrf-token"))) return res.status(403).json({ error: "csrf_invalid" });
     next();
   };
-  router.get("/admin/api/v1/supervisor/:projectId", requireAdmin, async (req, res) => {
-    if (!backend?.readAdmin) return res.status(503).json({ error: "supervisor_unavailable" });
+
+  async function readSnapshot(projectId: string, res: Response): Promise<unknown | undefined> {
+    if (!backend?.readAdmin) {
+      res.status(503).json({ error: "supervisor_unavailable" });
+      return undefined;
+    }
+    let snapshot: unknown;
+    try { snapshot = await backend.readAdmin(projectId); }
+    catch {
+      res.status(404).json({ error: "project_unavailable" });
+      return undefined;
+    }
+    const safe = safeAdminSnapshot(snapshot);
+    if (!safe) {
+      res.status(502).json({ error: "snapshot_unavailable" });
+      return undefined;
+    }
+    return safe.value;
+  }
+
+  router.get("/admin/supervisor/:projectId", requireAdminPage, async (req, res) => {
     const projectId = req.params.projectId;
-    if (typeof projectId !== "string") return res.status(404).json({ error: "project_unavailable" });
-    try { return res.json(await backend.readAdmin(projectId)); }
-    catch { return res.status(404).json({ error: "project_unavailable" }); }
+    if (typeof projectId !== "string" || !projectId || projectId.length > 200) return res.status(404).type("html").send("Project unavailable");
+    if (!backend?.readAdmin) {
+      const html = renderSupervisorDashboard({ state: "error", error: "Supervisor snapshot is unavailable." }, dashboardOptions(req, res.locals.supervisorNonce, res.locals.supervisorCsrf, undefined, projectId));
+      return res.status(503).type("html").send(html);
+    }
+    let raw: unknown;
+    try { raw = await backend.readAdmin(projectId); }
+    catch {
+      const html = renderSupervisorDashboard({ state: "error", error: "Project snapshot is unavailable." }, dashboardOptions(req, res.locals.supervisorNonce, res.locals.supervisorCsrf, undefined, projectId));
+      return res.status(404).type("html").send(html);
+    }
+    const safe = safeAdminSnapshot(raw);
+    if (!safe) {
+      const html = renderSupervisorDashboard({ state: "error", error: "Snapshot is unavailable or exceeds the display limit." }, dashboardOptions(req, res.locals.supervisorNonce, res.locals.supervisorCsrf, undefined, projectId));
+      return res.status(502).type("html").send(html);
+    }
+    const feedUrl = `/admin/api/v1/supervisor/${encodeURIComponent(projectId)}/live`;
+    const html = renderSupervisorDashboard(normalizeSupervisorSnapshot(safe.value), dashboardOptions(req, res.locals.supervisorNonce, res.locals.supervisorCsrf, feedUrl, projectId));
+    return res.type("html").send(html);
   });
+
+  router.get("/admin/api/v1/supervisor/:projectId", requireAdmin, async (req, res) => {
+    const projectId = req.params.projectId;
+    if (typeof projectId !== "string" || !projectId || projectId.length > 200) return res.status(404).json({ error: "project_unavailable" });
+    const snapshot = await readSnapshot(projectId, res);
+    if (snapshot === undefined) return;
+    return res.json(snapshot);
+  });
+
+  router.get("/admin/api/v1/supervisor/:projectId/live", requireAdmin, async (req, res) => {
+    const projectId = req.params.projectId;
+    if (typeof projectId !== "string" || !projectId || projectId.length > 200) return res.status(404).json({ error: "project_unavailable" });
+    const snapshot = await readSnapshot(projectId, res);
+    if (snapshot === undefined) return;
+    const normalized = normalizeSupervisorSnapshot(snapshot);
+    const options = dashboardOptions(req, res.locals.supervisorNonce, res.locals.supervisorCsrf);
+    return res.json({
+      ok: true,
+      eventsHtml: renderSupervisorEventFeed(normalized.events ?? [], options),
+      supervisor: normalized.supervisor?.status ?? "unknown",
+      orchestrator: normalized.orchestrator?.status ?? "unknown",
+      observedAt: normalized.observedAt ?? null,
+    });
+  });
+
   router.post("/admin/api/v1/supervisor/control", express.json({ limit: "16kb" }), requireAdmin, requireCsrf, async (req, res) => {
     const body = req.body as Record<string, unknown>;
     if (!backend?.controlAdmin) return res.status(503).json({ error: "supervisor_unavailable" });
-    if (!body || typeof body.projectId !== "string" || !["pause_dispatch", "resume_dispatch", "emergency_stop"].includes(String(body.action)) || !Number.isInteger(body.expectedRevision)) {
+    if (!body || typeof body.projectId !== "string" || body.projectId.length < 1 || body.projectId.length > 200 || !["pause_dispatch", "resume_dispatch", "emergency_stop"].includes(String(body.action)) || !Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0) {
       return res.status(400).json({ error: "invalid_control_request" });
     }
     try {
