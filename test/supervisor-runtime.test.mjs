@@ -122,6 +122,46 @@ test("real Python IPC registers two accounts, completes pinned tasks, isolates c
   assert.ok(resumed.tasks.every((task) => task.state === "complete"));
 });
 
+test("readAdmin projects reported usage and deduplicates account cost by task generation", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "t2o-runtime-usage-"));
+  await chmod(dir, 0o700);
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const configPath = join(dir, "runtime.json");
+  await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
+  const runtime = new SupervisorRuntime(await readSupervisorRuntimeConfig(configPath), { configPath, configDir: dir, supervisorCwd: join(process.cwd(), "supervisor"), store });
+  const usage = (delta, observedAt) => ({ reportedSessionCostUsd: 1.5, reportedCostDeltaUsd: delta, promptCountDelta: 2, budgetUsed: 4, maxBudget: 10,
+    fundingSource: "shared", sandboxTier: "standard", observedAt, source: "lightsprint-session-status", provisional: true, budgetUnit: "unknown" });
+  const assignment = { assignmentId: "job-usage", projectId: "project-a", state: "running", tasks: [
+    { taskId: "task-one", state: "running", generation: 2, sessionId: "session-a", selectedAccountId: "acct-a", modelReported: "gpt-6-luna", usage: usage(0.12, 200) },
+    { taskId: "task-two", state: "running", generation: 1, sessionId: "session-a", selectedAccountId: "acct-a", modelReported: "gpt-6-luna", usage: usage(0.13, 300) },
+    { taskId: "task-three", state: "queued", generation: 0, sessionId: "session-b", selectedAccountId: "acct-b", usage: { reportedCostDeltaUsd: -1, maxBudget: 0 } },
+  ] };
+  runtime.bridge.request = async (_method, path) => {
+    if (path.startsWith("/admin/api/v1/assignments?")) return { assignments: [{ assignmentId: "job-usage" }] };
+    if (path === "/admin/api/v1/assignments/job-usage") return assignment;
+    if (path === "/admin/api/v1/events?after=0&limit=50") return { events: [] };
+    throw new Error(`unexpected readAdmin request: ${path}`);
+  };
+  runtime.bridge.status = () => ({ state: "ready" });
+
+  const snapshot = await runtime.readAdmin("project-a");
+  const accountA = snapshot.providers[0].accounts.find((account) => account.id === "acct-a");
+  const accountB = snapshot.providers[0].accounts.find((account) => account.id === "acct-b");
+  const workerA = snapshot.providers[0].accounts.flatMap((account) => account.workspaces).flatMap((workspace) => workspace.workers).find((worker) => worker.id === "session-a");
+  assert.equal(snapshot.tasks.filter((task) => task.accountId === "acct-a").length, 2);
+  assert.equal(snapshot.tasks.find((task) => task.id === "job-usage:task-one").usage.reportedCostDeltaUsd, 0.12);
+  assert.equal(accountA.usage.reportedCostDeltaUsd, 0.25);
+  assert.equal(accountA.usage.coveredTaskGenerations, 2);
+  assert.equal(accountA.usage.totalTaskGenerations, 2);
+  assert.equal(accountA.usage.provisional, true);
+  assert.equal(workerA.usage.reportedCostDeltaUsd, 0.13);
+  assert.equal(workerA.model, "gpt-6-luna");
+  assert.equal(accountB.usage.coveredTaskGenerations, 0);
+  assert.equal("reportedCostDeltaUsd" in accountB.usage, false);
+  assert.equal("capacity" in accountA, false);
+  assert.equal("quota" in accountA, false);
+});
+
 test("runtime config rejects permissive fields, missing workspace bindings, and non-private files", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "t2o-config-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
