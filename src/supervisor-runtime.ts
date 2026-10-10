@@ -2,17 +2,20 @@ import { createHash } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { PROVIDER_PROFILES } from "./provider-capabilities.js";
+import { createJobWorker, type JobBridge, type JobWorkerOptions, type PinnedJobsAdapter } from "./job-worker.js";
+import { JobInputError, validateJobToolArguments, type JobTaskInput, type JobToolName } from "./job-submit.js";
+import { LightSprintJobsAdapter } from "./providers/lightsprint-jobs.js";
 import type { StateStore } from "./store.js";
-import type { JobToolName } from "./job-submit.js";
-import { JobInputError } from "./job-submit.js";
+import type { UpstreamAccount } from "./types.js";
 import { SupervisorBridge, type SupervisorBridgeOptions } from "./supervisor-bridge.js";
 import type { SupervisorBackend, SupervisorCaller } from "./supervisor-api.js";
+import type { SupervisorEvent, SupervisorJob, SupervisorSnapshot, SupervisorTask, SupervisorWorker } from "./supervisor-ui.js";
 
 const MODEL = "gpt-6-luna";
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_CONFIG = 64 * 1024;
-
-type RegisteredSession = { sessionId: string; accountId: string; model: typeof MODEL };
+type RegisteredSession = { sessionId: string; accountId: string; model: typeof MODEL; workspaceId: string };
 type ProjectPolicy = { projectId: string; clientIds: string[]; accountIds: string[]; registeredSessions: RegisteredSession[] };
 export interface SupervisorRuntimeConfig {
   version: 1;
@@ -27,6 +30,9 @@ export interface SupervisorRuntimeOptions {
   supervisorCwd?: string;
   store: StateStore;
   bridgeOptions?: Partial<SupervisorBridgeOptions>;
+  /** Injection seam for deterministic tests; production defaults to the pinned LightSprint adapter. */
+  adapterFactory?: JobWorkerOptions["adapterFactory"];
+  workerOptions?: Partial<Pick<JobWorkerOptions, "pollIntervalMs" | "requestTimeoutMs" | "adapterTimeoutMs" | "now" | "onDiagnostic">>;
 }
 
 function object(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
@@ -34,8 +40,34 @@ function safeId(value: unknown): value is string { return typeof value === "stri
 function assertKeys(value: Record<string, unknown>, keys: string[], where: string): void {
   if (Object.keys(value).some((key) => !keys.includes(key))) throw new Error(`Invalid supervisor config fields: ${where}`);
 }
+function parseJson(body: unknown): Record<string, unknown> {
+  if (!body) return {};
+  if (object(body)) return body;
+  try { const encoded = typeof body === "string" ? body : Buffer.from(body as Uint8Array).toString("utf8"); const value: unknown = JSON.parse(encoded); return object(value) ? value : {}; }
+  catch { throw new Error("invalid_supervisor_response"); }
+}
+function boundedJson(value: unknown, max = 1_048_576): unknown {
+  if (Buffer.byteLength(JSON.stringify(value)) > max) throw new JobInputError("supervisor response exceeds configured bounds");
+  return value;
+}
+function nativeLightSprintTarget(url: string): boolean {
+  try {
+    const actual = new URL(url);
+    const expected = new URL(PROVIDER_PROFILES.lightsprint.defaultServerUrl);
+    return actual.href === expected.href && actual.protocol === "https:" && actual.pathname === "/mcp" && !actual.search && !actual.hash;
+  } catch { return false; }
+}
+function accountSignal(account: UpstreamAccount | undefined, nativeTarget: boolean) {
+  const providerOk = account?.provider === "lightsprint" || (account?.provider === "generic-bearer-mcp" && nativeTarget);
+  const enabled = account?.enabled === true;
+  const authFailed = account?.stats?.state === "auth-failed" || account?.stats?.lastStatus === 401;
+  const health = authFailed ? "auth_failed" : account?.stats?.state === "healthy" || account?.stats?.state === "exhausted" ? "healthy" : "degraded";
+  // A 429 is a rate-limit observation, not proof that account credits are depleted.
+  const quota = account?.stats?.state === "exhausted" || account?.stats?.lastStatus === 402 ? "depleted" : "unknown";
+  return { providerOk, enabled, authorized: !!providerOk && !authFailed, health, quota };
+}
 
-/** Parse strict, private operator configuration; config cannot name executables or env overrides. */
+/** Parse strict private configuration. Every usable session includes its actual workspace identifier. */
 export async function readSupervisorRuntimeConfig(path: string): Promise<SupervisorRuntimeConfig> {
   const absolute = resolve(path);
   const info = await lstat(absolute);
@@ -53,25 +85,22 @@ export async function readSupervisorRuntimeConfig(path: string): Promise<Supervi
   const projects: ProjectPolicy[] = raw.projects.map((candidate: unknown): ProjectPolicy => {
     if (!object(candidate)) throw new Error("Invalid project policy");
     assertKeys(candidate, ["projectId", "clientIds", "accountIds", "registeredSessions"], "project");
-    const projectId = candidate.projectId;
-    const rawClientIds = candidate.clientIds;
-    const rawAccountIds = candidate.accountIds;
-    const rawSessions = candidate.registeredSessions;
-    if (!safeId(projectId) || !Array.isArray(rawClientIds) || !rawClientIds.length || !rawClientIds.every(safeId) || new Set(rawClientIds).size !== rawClientIds.length || !Array.isArray(rawAccountIds) || !rawAccountIds.length || rawAccountIds.length > 50 || !rawAccountIds.every(safeId) || new Set(rawAccountIds).size !== rawAccountIds.length || !Array.isArray(rawSessions)) throw new Error("Invalid project bindings");
-    const clientIds = rawClientIds as string[];
+    const projectId = candidate.projectId, rawClientIds = candidate.clientIds, rawAccountIds = candidate.accountIds, rawSessions = candidate.registeredSessions;
+    if (!safeId(projectId) || !Array.isArray(rawClientIds) || !rawClientIds.length || !rawClientIds.every(safeId) || new Set(rawClientIds).size !== rawClientIds.length ||
+        !Array.isArray(rawAccountIds) || !rawAccountIds.length || rawAccountIds.length > 50 || !rawAccountIds.every(safeId) || new Set(rawAccountIds).size !== rawAccountIds.length || !Array.isArray(rawSessions)) throw new Error("Invalid project bindings");
     const accountIds = rawAccountIds as string[];
     const registeredSessions: RegisteredSession[] = rawSessions.map((item: unknown): RegisteredSession => {
       if (!object(item)) throw new Error("Invalid registered session");
-      assertKeys(item, ["sessionId", "accountId", "model"], "registeredSession");
-      const sessionId = item.sessionId;
-      const accountId = item.accountId;
-      if (!safeId(sessionId) || !safeId(accountId) || !accountIds.includes(accountId) || item.model !== MODEL) throw new Error("Registered sessions must be bound to an eligible account and gpt-6-luna");
-      return { sessionId, accountId, model: MODEL };
+      assertKeys(item, ["sessionId", "accountId", "model", "workspaceId"], "registeredSession");
+      if (!safeId(item.sessionId) || !safeId(item.accountId) || !accountIds.includes(item.accountId) || item.model !== MODEL || !safeId(item.workspaceId)) throw new Error("Registered sessions must be bound to an eligible account, workspace, and gpt-6-luna");
+      return { sessionId: item.sessionId, accountId: item.accountId, model: MODEL, workspaceId: item.workspaceId };
     });
     if (new Set(registeredSessions.map((item) => item.sessionId)).size !== registeredSessions.length) throw new Error("Duplicate registered session");
-    return { projectId, clientIds, accountIds, registeredSessions };
+    return { projectId, clientIds: rawClientIds as string[], accountIds, registeredSessions };
   });
   if (!projects.length || new Set(projects.map((item) => item.projectId)).size !== projects.length) throw new Error("Supervisor config needs unique projects");
+  const sessionIds = projects.flatMap((p) => p.registeredSessions.map((s) => s.sessionId));
+  if (new Set(sessionIds).size !== sessionIds.length) throw new Error("A registered session may be owned by only one project");
   return { version: 1, projects, maxWorkers: Number(raw.maxWorkers), allowUnknownQuota: true,
     localLimits: { maxTasks: Number(raw.localLimits.maxTasks), maxJobBytes: Number(raw.localLimits.maxJobBytes), maxOutputBytes: Number(raw.localLimits.maxOutputBytes) } };
 }
@@ -81,124 +110,247 @@ function configuredProject(config: SupervisorRuntimeConfig, caller: SupervisorCa
   if (!project) throw new JobInputError("project is not authorized for this OAuth client");
   return project;
 }
-function parseJson(body: unknown): Record<string, unknown> {
-  if (!body) return {};
-  if (object(body)) return body;
-  try { const encoded = typeof body === "string" ? body : Buffer.from(body as Uint8Array).toString("utf8"); const value: unknown = JSON.parse(encoded); return object(value) ? value : {}; }
-  catch { throw new Error("invalid_supervisor_response"); }
-}
-function boundedJson(value: unknown, max = 1_048_576): unknown {
-  const serialized = JSON.stringify(value);
-  if (Buffer.byteLength(serialized) > max) throw new JobInputError("supervisor response exceeds configured bounds");
-  return value;
-}
 
 export class SupervisorRuntime implements SupervisorBackend {
   private readonly bridge: SupervisorBridge;
+  private worker?: ReturnType<typeof createJobWorker>;
   private closed = false;
+  private started = false;
+  private readonly adapterCache = new Map<string, PinnedJobsAdapter>();
+  private readonly owner = (caller: SupervisorCaller) => ({ ownerPrincipalId: `oauth-client:${caller.clientId}`, clientId: caller.clientId });
 
   constructor(private readonly config: SupervisorRuntimeConfig, private readonly options: SupervisorRuntimeOptions) {
     const spawnChild = options.bridgeOptions?.spawnChild ?? ((function (command: string, args?: readonly string[], spawnOptions?: any) {
-      // The Python socket is created with this inherited umask, so it is private
-      // from its first visible inode (before the bridge's chmod verification).
       if (!args || args[0] !== "-m" || args[1] !== "snooze.bridge") throw new Error("Unexpected supervisor command");
-      const code = "import os,runpy,sys; os.umask(0o077); sys.argv=['snooze.bridge',*sys.argv[1:]]; runpy.run_module('snooze.bridge',run_name='__main__')";
+      const code = "import os,runpy,sys; os.umask(0o177); sys.argv=['snooze.bridge',*sys.argv[1:]]; runpy.run_module('snooze.bridge',run_name='__main__')";
       return nodeSpawn(command, ["-c", code, ...args.slice(2)], spawnOptions);
     }) as typeof nodeSpawn);
     this.bridge = new SupervisorBridge({ enabled: true, configDir: options.configDir, supervisorCwd: options.supervisorCwd ?? resolve(process.cwd(), "supervisor"), ...options.bridgeOptions, spawnChild });
   }
 
   async start(): Promise<void> {
+    if (this.started) return;
+    if (this.closed) throw new Error("supervisor_closed");
     const state = await this.options.store.load();
-    for (const project of this.config.projects) for (const accountId of project.accountIds) {
-      const account = state.accounts.find((row) => row.id === accountId);
-      if (!account || account.provider !== "lightsprint" || !account.enabled) throw new Error("Configured supervisor account is unavailable");
+    const sessionsByAccount = new Map<string, RegisteredSession[]>();
+    for (const project of this.config.projects) for (const session of project.registeredSessions) {
+      sessionsByAccount.set(session.accountId, [...(sessionsByAccount.get(session.accountId) ?? []), session]);
     }
+    if ([...sessionsByAccount.values()].some((sessions) => sessions.length > 100)) throw new Error("Supervisor config exceeds 100 sessions per account");
+    const supportedTarget = nativeLightSprintTarget(state.config.upstreamUrl);
     await this.bridge.start();
-    // R21's current operation claim does not return the task instruction packet
-    // or registered session; R22 would consume and reject such a claim. The
-    // durable worker is intentionally not started until that contract is fixed.
+    try {
+      for (const accountId of new Set(this.config.projects.flatMap((project) => project.accountIds))) {
+        const account = state.accounts.find((row) => row.id === accountId);
+        if (!account) throw new Error("Configured supervisor account is unavailable");
+        const signal = accountSignal(account, supportedTarget);
+        await this.bridge.request("POST", "/v1/accounts", {
+          accountId, enabled: signal.enabled, authorized: signal.authorized,
+          allowUnknownQuota: this.config.allowUnknownQuota, health: signal.health, quota: signal.quota,
+          // One active task per account guarantees its registered session is never reused concurrently.
+          localCapacity: 1,
+          registeredSessions: (sessionsByAccount.get(accountId) ?? []).map((session) => ({ id: session.sessionId, model: session.model, workspace: session.workspaceId })),
+        });
+      }
+    const adapters = this.options.adapterFactory ?? ((accountId, limits) => {
+      let adapter = this.adapterCache.get(accountId);
+      if (!adapter) { adapter = new LightSprintJobsAdapter(this.options.store, accountId, { timeoutMs: limits.timeoutMs }); this.adapterCache.set(accountId, adapter); }
+      return adapter;
+    });
+    const workerBridge: JobBridge = {
+      request: async <T = unknown>(method: "POST", route: string, body?: unknown, requestOptions?: { signal?: AbortSignal; timeoutMs?: number }): Promise<T | undefined> => {
+        // The current worker emits ISO text for assistantAt; Python persists seconds. Newer
+        // workers already emit numeric seconds and pass through unchanged.
+        if (route.endsWith("/result") && object(body) && object(body.result)) {
+          let result = body.result;
+          if (typeof result.assistantAt === "string") {
+            const timestamp = Date.parse(result.assistantAt);
+            if (Number.isFinite(timestamp)) result = { ...result, assistantAt: timestamp / 1000 };
+          }
+          // The Python observer contract consumes the provider's terminal session status.
+          if (result.status === "assistant_result_ready" && typeof result.assistantText === "string") result = { ...result, status: "idle" };
+          body = { ...body, result };
+        }
+        return this.bridge.request<T>(method, route, body, requestOptions);
+      },
+    };
+      this.worker = createJobWorker({
+        bridge: workerBridge,
+        adapterFactory: adapters,
+        isAccountEligible: async (accountId) => {
+          const latest = await this.options.store.load();
+          const signal = accountSignal(latest.accounts.find((row) => row.id === accountId), nativeLightSprintTarget(latest.config.upstreamUrl));
+          return signal.enabled && signal.authorized && signal.health === "healthy" && (signal.quota === "available" || signal.quota === "unknown" && this.config.allowUnknownQuota);
+        },
+        workerId: `token2oauth-${createHash("sha256").update(this.options.configDir).digest("hex").slice(0, 12)}`,
+        allowedModels: [MODEL], maxConcurrent: Math.min(this.config.maxWorkers, Math.max(1, new Set(this.config.projects.flatMap((p) => p.accountIds)).size)),
+        allowFreshOperations: false, ...this.options.workerOptions,
+      });
+      this.worker.start();
+      this.started = true;
+    } catch (error) {
+      await this.bridge.close();
+      throw error;
+    }
   }
 
-  get status() { return this.bridge.status(); }
+  get status() { return { ...this.bridge.status(), workerStarted: this.started && !this.closed }; }
 
-  async callTool(name: JobToolName, args: unknown, caller: SupervisorCaller): Promise<unknown> {
-    if (this.closed) throw new Error("supervisor_closed");
+  async callTool(name: JobToolName, rawArgs: unknown, caller: SupervisorCaller): Promise<unknown> {
+    if (this.closed || !this.started) throw new Error("supervisor_not_running");
     const project = configuredProject(this.config, caller);
-    if (!object(args)) throw new JobInputError("invalid tool arguments");
+    const args = validateJobToolArguments(name, rawArgs) as Record<string, any>;
+    if (args.projectId !== project.projectId) throw new JobInputError("project is not authorized for this OAuth client");
+    const owner = this.owner(caller);
     if (name === "job_submit") {
-      const accounts = args.eligibleAccountIds;
-      if (!Array.isArray(accounts) || accounts.some((id) => !project.accountIds.includes(id))) throw new JobInputError("eligible accounts are outside this project binding");
-      if (accounts.length < 2) throw new JobInputError("the current durable scheduler requires at least two eligible accounts");
-      const tasks = args.tasks;
-      if (!Array.isArray(tasks) || tasks.length > this.config.localLimits.maxTasks) throw new JobInputError("tasks exceed the configured supervisor limit");
-      const normalized = tasks.map((candidate) => {
-        if (!object(candidate)) throw new JobInputError("invalid task");
-        const execution = candidate.execution;
-        if (!object(execution) || execution.mode !== "existing-session") throw new JobInputError("fresh execution is disabled; only registered existing sessions are enabled");
-        const registered = project.registeredSessions.find((session) => accounts.includes(session.accountId));
-        if (!registered) throw new JobInputError("no registered existing session is configured for the eligible accounts");
-        const output = candidate.output;
-        if (!object(output)) throw new JobInputError("invalid task output");
-        if (output.kind === "text" && Number(output.maxBytes) > this.config.localLimits.maxOutputBytes) throw new JobInputError("text output exceeds the configured supervisor limit");
-        if (output.kind === "json-records" && (!Array.isArray(output.requiredFields) || !output.requiredFields.length)) throw new JobInputError("the current durable scheduler requires JSON record fields");
-        let supervisorOutput: Record<string, unknown>;
-        if (output.kind === "coding-artifact") {
-          supervisorOutput = { kind: "coding-artifact", repository: output.repositoryId, allowedPaths: output.allowedPaths, requirePullRequest: output.requirePullRequest ?? false };
-        } else supervisorOutput = output;
-        const scopes = Array.isArray(candidate.scopeKeys) ? candidate.scopeKeys as string[] : [];
-        const effectiveScopes = scopes.length ? scopes : output.kind === "coding-artifact" && Array.isArray(output.allowedPaths)
-          ? output.allowedPaths.map((path) => `path:${path}`)
-          : [`path:token2oauth-output/${String(candidate.taskId)}`];
-        const taskId = String(candidate.taskId);
-        const digestInput = JSON.stringify({ taskId, dependsOn: candidate.dependsOn, scopeKeys: effectiveScopes, instructions: candidate.instructions, output: supervisorOutput });
-        const inputSha256 = createHash("sha256").update(digestInput).digest("hex");
-        return { taskId, dependsOn: candidate.dependsOn, scopeKeys: effectiveScopes,
-          inputRef: `token2oauth-job:${String(args.jobId)}/${taskId}`, inputSha256, instructions: candidate.instructions,
-          execution: { mode: "existing-session", sessionId: registered.sessionId, accountId: registered.accountId }, output: supervisorOutput };
+      const requested = args.eligibleAccountIds as string[];
+      if (requested.some((id) => !project.accountIds.includes(id))) throw new JobInputError("eligible accounts are outside this project binding");
+      const state = await this.options.store.load();
+      const nativeTarget = nativeLightSprintTarget(state.config.upstreamUrl);
+      const eligible = requested.filter((id) => {
+        const signal = accountSignal(state.accounts.find((row) => row.id === id), nativeTarget);
+        return signal.enabled && signal.authorized && signal.health === "healthy" && (signal.quota === "available" || signal.quota === "unknown" && this.config.allowUnknownQuota);
+      });
+      if (!eligible.length) throw new JobInputError("no requested account is currently enabled, authorized, healthy, and quota-eligible");
+      const sessions = project.registeredSessions.filter((session) => eligible.includes(session.accountId));
+      if (!sessions.length) throw new JobInputError("no registered session is configured for the eligible accounts");
+      let nextSession = 0;
+      const tasks = (args.tasks as JobTaskInput[]).map((task) => {
+        const output = task.output;
+        if (output.kind !== "text") throw new JobInputError("the current supervisor supports bounded text output only");
+        if (output.maxBytes > this.config.localLimits.maxOutputBytes) throw new JobInputError("text output exceeds the configured supervisor limit");
+        const session = sessions[nextSession++ % sessions.length]!;
+        const markerLine = `\n\nInclude this exact completion marker on its own line: ${output.expectedMarker}`;
+        if (Buffer.byteLength(task.instructions + markerLine) > 16_384) throw new JobInputError("instructions plus completion marker exceed 16 KiB");
+        return { ...task, instructions: task.instructions + markerLine,
+          execution: { mode: "existing-session", accountId: session.accountId, sessionId: session.sessionId } };
       });
       const assignment = { schemaVersion: 1, assignmentId: args.jobId, idempotencyKey: args.idempotencyKey,
-        projectId: project.projectId, eligibleAccountIds: accounts, tasks: normalized };
+        projectId: project.projectId, eligibleAccountIds: eligible, maxWorkers: this.config.maxWorkers, tasks };
       if (Buffer.byteLength(JSON.stringify(assignment)) > this.config.localLimits.maxJobBytes) throw new JobInputError("job exceeds the configured supervisor byte limit");
-      const result = await this.bridge.request("POST", "/v1/assignments", assignment);
-      return boundedJson({ ...parseJson(result), dispatchEnabled: false, blockerCode: "worker_contract_mismatch" });
+      return boundedJson(await this.bridge.request("POST", "/v1/assignments", assignment, owner));
     }
-    if (args.projectId !== project.projectId) throw new JobInputError("project is not authorized for this OAuth client");
-    if (name === "job_status" || name === "job_results") {
+    if (name === "job_status") {
       if (!safeId(args.jobId)) throw new JobInputError("jobId is invalid");
-      const detail = await this.bridge.request("GET", `/admin/api/v1/assignments/${args.jobId}`);
-      const row = parseJson(detail);
+      const row = parseJson(await this.bridge.request("GET", `/admin/api/v1/assignments/${args.jobId}`, undefined, owner));
       if (row.projectId !== project.projectId) throw new JobInputError("job is not available");
-      if (name === "job_results") return boundedJson({ jobId: args.jobId, resultsAvailable: false, reason: "durable bridge does not expose bounded result artifacts yet", tasks: row.tasks });
-      return boundedJson({ ...row, dispatchEnabled: false, blockerCode: "worker_contract_mismatch" });
+      return boundedJson(row);
     }
-    if (name === "job_workers") return boundedJson({ projectId: project.projectId, workers: [], dispatchEnabled: false,
-      blockerCode: "worker_contract_mismatch", configuredAccounts: project.accountIds.map((accountId) => ({ accountId, capacity: "unknown", quota: "unknown" })) });
-    if (name === "job_inbox") {
-      const after = Number.isInteger(args.after) ? Number(args.after) : 0;
-      const limit = Math.min(100, Number.isInteger(args.limit) ? Number(args.limit) : 50);
-      const response = parseJson(await this.bridge.request("GET", `/admin/api/v1/events?after=${after}&limit=${limit}`));
-      const events = Array.isArray(response.events) ? response.events.filter((event: unknown) => object(event) && event.projectId === project.projectId) : [];
-      return boundedJson({ projectId: project.projectId, events, cursor: response.cursor, hasMore: response.hasMore });
+    if (name === "job_results") {
+      if (!safeId(args.jobId)) throw new JobInputError("jobId is invalid");
+      // The durable results DTO intentionally omits projectId; verify the owning
+      // assignment through the owner-filtered status route before reading results.
+      const assignment = parseJson(await this.bridge.request("GET", `/admin/api/v1/assignments/${args.jobId}`, undefined, owner));
+      if (assignment.projectId !== project.projectId) throw new JobInputError("job is not available");
+      const row = parseJson(await this.bridge.request("GET", `/v1/assignments/${args.jobId}/results`, undefined, owner));
+      if (row.assignmentId !== args.jobId) throw new JobInputError("job is not available");
+      const results = Array.isArray(row.results) ? row.results.filter((item: unknown) => object(item) && (!args.taskId || (item.taskId ?? item.task_id) === args.taskId)).map((item: Record<string, unknown>) => ({
+        taskId: item.taskId ?? item.task_id, generation: item.generation, text: item.text,
+        assistantAt: item.assistantAt ?? item.assistant_at, reportedModel: item.reportedModel ?? item.reported_model,
+        createdAt: item.createdAt ?? item.created_at,
+      })) : [];
+      return boundedJson({ assignmentId: args.jobId, results });
     }
-    // Python R21 exposes only global pause/emergency-stop controls; applying them
-    // through a project-scoped MCP tool would affect unrelated projects.
-    throw new JobInputError("project-scoped job control is unavailable in the current durable bridge");
+    if (name === "job_workers") {
+      const state = await this.options.store.load();
+      const nativeTarget = nativeLightSprintTarget(state.config.upstreamUrl);
+      const workers = project.registeredSessions.map((session) => {
+        const signal = accountSignal(state.accounts.find((row) => row.id === session.accountId), nativeTarget);
+        return { sessionId: session.sessionId, accountId: session.accountId, model: session.model, state: "configured",
+          eligible: signal.enabled && signal.authorized && signal.health === "healthy" && (signal.quota === "available" || signal.quota === "unknown" && this.config.allowUnknownQuota),
+          quota: signal.quota, capacity: "unknown" };
+      });
+      return boundedJson({ projectId: project.projectId, workers, maxWorkers: this.config.maxWorkers, dispatchEnabled: true });
+    }
+    if (name === "job_control" && args.action === "cancel_job") {
+      const jobId = String(args.jobId);
+      const row = parseJson(await this.bridge.request("GET", `/admin/api/v1/assignments/${jobId}`, undefined, owner));
+      if (row.projectId !== project.projectId || !Number.isInteger(row.revision)) throw new JobInputError("job is not available");
+      return boundedJson(await this.bridge.request("POST", `/v1/assignments/${jobId}/cancel`, { expectedRevision: row.revision }, owner));
+    }
+    // R21's event and global control endpoints have no project-scoped read/write contract.
+    throw new JobInputError(name === "job_inbox" ? "project-scoped inbox is unavailable in the current bridge contract" : "global supervisor controls are unavailable through project-scoped MCP");
   }
 
   async readAdmin(projectId: string): Promise<unknown> {
     const project = this.config.projects.find((item) => item.projectId === projectId);
     if (!project) throw new Error("project unavailable");
-    return boundedJson(await this.bridge.request("GET", `/admin/api/v1/assignments?projectId=${encodeURIComponent(project.projectId)}&limit=50`));
+    const observedAt = new Date().toISOString();
+    const state = await this.options.store.load();
+    const nativeTarget = nativeLightSprintTarget(state.config.upstreamUrl);
+    const summaries = new Map<string, { owner: { ownerPrincipalId: string; clientId: string } }>();
+    for (const clientId of project.clientIds) {
+      if (summaries.size >= 50) break;
+      const owner = this.owner({ clientId, projectId: project.projectId });
+      const listing = parseJson(await this.bridge.request("GET", `/admin/api/v1/assignments?projectId=${encodeURIComponent(project.projectId)}&limit=50`, undefined, owner));
+      for (const summary of Array.isArray(listing.assignments) ? listing.assignments.filter(object) : []) {
+        if (safeId(summary.assignmentId) && !summaries.has(summary.assignmentId)) summaries.set(summary.assignmentId, { owner });
+      }
+    }
+    const assignments = (await Promise.all([...summaries].map(async ([id, context]) => {
+      const row = parseJson(await this.bridge.request("GET", `/admin/api/v1/assignments/${id}`, undefined, context.owner));
+      return row.projectId === project.projectId ? row : undefined;
+    }))).filter((row): row is Record<string, unknown> => !!row);
+    const sessionById = new Map(project.registeredSessions.map((session) => [session.sessionId, session]));
+    const tasks: SupervisorTask[] = [];
+    const jobs: SupervisorJob[] = assignments.map((assignment) => {
+      const assignmentId = String(assignment.assignmentId);
+      const taskRows = Array.isArray(assignment.tasks) ? assignment.tasks.filter(object) : [];
+      const dependencies = [...new Set(taskRows.flatMap((task) => Array.isArray(task.dependsOn) ? task.dependsOn.filter((value): value is string => typeof value === "string") : []))];
+      for (const task of taskRows) {
+        const taskId = typeof task.taskId === "string" ? task.taskId : "unknown";
+        const sessionId = typeof task.sessionId === "string" ? task.sessionId : undefined;
+        const session = sessionId ? sessionById.get(sessionId) : undefined;
+        tasks.push({ id: `${assignmentId}:${taskId}`, label: taskId, status: typeof task.state === "string" ? task.state : "unknown",
+          ...(session ? { workspace: session.workspaceId, worker: session.sessionId } : {}) });
+      }
+      const accounts = [...new Set(taskRows.flatMap((task) => typeof task.selectedAccountId === "string" ? [task.selectedAccountId] : []))];
+      return { id: assignmentId, label: `${taskRows.length} task${taskRows.length === 1 ? "" : "s"}`, status: typeof assignment.state === "string" ? assignment.state : "unknown",
+        provider: "LightSprint", ...(accounts.length ? { account: accounts.join(", ") } : {}), dependencies };
+    });
+    const accountIds = [...new Set(project.accountIds)];
+    const workers: SupervisorWorker[] = project.registeredSessions.map((session) => {
+      const signal = accountSignal(state.accounts.find((account) => account.id === session.accountId), nativeTarget);
+      const eligible = signal.enabled && signal.authorized && signal.health === "healthy" && (signal.quota === "available" || signal.quota === "unknown" && this.config.allowUnknownQuota);
+      return { id: session.sessionId, workspace: session.workspaceId, status: eligible ? "eligible" : "unavailable" };
+    });
+    const providers = [{ id: "lightsprint", label: "LightSprint", status: accountIds.some((accountId) => {
+      const signal = accountSignal(state.accounts.find((account) => account.id === accountId), nativeTarget);
+      return signal.enabled && signal.authorized && signal.health === "healthy";
+    }) ? "available" : "unavailable", accounts: accountIds.map((accountId) => {
+      const account = state.accounts.find((candidate) => candidate.id === accountId);
+      const signal = accountSignal(account, nativeTarget);
+      const status = !account || !signal.enabled ? "disabled" : !signal.providerOk ? "unsupported" : !signal.authorized ? "auth_failed" : signal.health;
+      const workspaces = project.registeredSessions.filter((session) => session.accountId === accountId).reduce((groups, session) => {
+        let group = groups.find((item) => item.id === session.workspaceId);
+        if (!group) { group = { id: session.workspaceId, workers: [] as SupervisorWorker[] }; groups.push(group); }
+        group.workers.push(workers.find((worker) => worker.id === session.sessionId)!);
+        return groups;
+      }, [] as Array<{ id: string; workers: SupervisorWorker[] }>);
+      return { id: accountId, label: account?.label || accountId, status, workspaces };
+    }) }];
+    const assignmentIds = new Set(assignments.map((assignment) => String(assignment.assignmentId)));
+    const eventPage = parseJson(await this.bridge.request("GET", "/admin/api/v1/events?after=0&limit=50"));
+    const events: SupervisorEvent[] = (Array.isArray(eventPage.events) ? eventPage.events.filter(object) : [])
+      .filter((event) => event.projectId === project.projectId || (typeof event.assignmentId === "string" && assignmentIds.has(event.assignmentId)))
+      .map((event) => ({ id: String(event.id ?? ""), at: typeof event.at === "string" || typeof event.at === "number" ? event.at : undefined,
+        severity: typeof event.kind === "string" && /error|fail|ambiguous/i.test(event.kind) ? "warning" : "info", source: "supervisor",
+        message: typeof event.kind === "string" ? event.kind.slice(0, 120) : "event" }));
+    const snapshot: SupervisorSnapshot = { observedAt, state: "ready", providers, jobs, tasks, workers, events,
+      supervisor: { status: this.bridge.status().state, observedAt },
+      orchestrator: { status: this.started && !this.closed ? "running" : "stopped", observedAt } };
+    return boundedJson(snapshot);
   }
-  async controlAdmin(input: { projectId: string; action: "pause_dispatch" | "resume_dispatch" | "emergency_stop"; expectedRevision: number }): Promise<unknown> {
-    configuredProject(this.config, { projectId: input.projectId, clientId: this.config.projects.find((p) => p.projectId === input.projectId)?.clientIds[0] ?? "" });
-    throw new Error("project-scoped supervisor controls are unavailable in the current durable bridge");
-  }
+  async controlAdmin(): Promise<unknown> { throw new Error("project-scoped supervisor controls are unavailable"); }
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.bridge.close();
+    try { await this.worker?.stop(); }
+    finally {
+      await this.bridge.close();
+      this.adapterCache.clear();
+      this.started = false;
+    }
   }
 }
 

@@ -58,7 +58,7 @@ async function fixture({ handler, httpClient, startupTimeoutMs = 300 } = {}) {
     authPipe.on("data", (chunk) => { bearer += chunk.toString("ascii"); });
     authPipe.on("end", () => {
       server = createServer((req, res) => {
-        requestSeen({ method: req.method, url: req.url, authorization: req.headers.authorization });
+        requestSeen({ method: req.method, url: req.url, authorization: req.headers.authorization, owner: req.headers["x-owner-principal"], client: req.headers["x-client-id"] });
         handler?.({ req, res, bearer, child });
         if (!handler) {
           req.resume();
@@ -81,7 +81,7 @@ async function fixture({ handler, httpClient, startupTimeoutMs = 300 } = {}) {
     configDir,
     supervisorCwd,
     startupTimeoutMs,
-    requestTimeoutMs: 300,
+    requestTimeoutMs: 3_000,
     maxResponseBytes: 1024,
     spawnChild,
     ...(httpClient ? { httpClient } : {}),
@@ -113,11 +113,13 @@ test("starts only explicitly, sends bearer on the Unix socket, and closes its ow
     assert.equal((await lstat(f.bridge.socketPath)).mode & 0o777, 0o600);
     assert.equal(Buffer.from(f.bearer, "base64url").length, 32);
 
-    const result = await f.bridge.request("GET", "/admin/api/v1/assignments?limit=1");
+    const result = await f.bridge.request("GET", "/admin/api/v1/assignments?limit=1", undefined, { ownerPrincipalId: "oauth-client:client-a", clientId: "client-a" });
     assert.deepEqual(result, { ok: true });
     const observed = await f.requestPromise;
     assert.equal(observed.method, "GET");
     assert.equal(observed.authorization, `Bearer ${f.bearer}`);
+    assert.equal(observed.owner, "oauth-client:client-a");
+    assert.equal(observed.client, "client-a");
     assert.equal(f.child.killed, undefined);
 
     await f.bridge.close();
@@ -132,6 +134,10 @@ test("starts only explicitly, sends bearer on the Unix socket, and closes its ow
 test("rejects unlisted routes, path traversal, duplicate query keys, and unsupported methods", () => {
   assert.equal(isAllowedSupervisorRoute("POST", "/admin/api/v1/assignments"), true);
   assert.equal(isAllowedSupervisorRoute("GET", "/admin/api/v1/events?after=1&limit=200"), true);
+  assert.equal(isAllowedSupervisorRoute("POST", "/v1/accounts"), true);
+  assert.equal(isAllowedSupervisorRoute("GET", "/v1/assignments/job-1/results"), true);
+  assert.equal(isAllowedSupervisorRoute("POST", "/v1/assignments/job-1/cancel"), true);
+  assert.equal(isAllowedSupervisorRoute("POST", "/v1/accounts/job-1"), false);
   assert.equal(isAllowedSupervisorRoute("DELETE", "/admin/api/v1/assignments/id"), false);
   assert.equal(isAllowedSupervisorRoute("GET", "/admin/api/v1/assignments/../events"), false);
   assert.equal(isAllowedSupervisorRoute("GET", "/admin/api/v1/events?limit=1&limit=2"), false);

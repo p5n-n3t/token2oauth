@@ -19,10 +19,7 @@ export interface JobTaskInput {
   inputSha256?: string;
   instructions: string;
   execution: { mode: "fresh"; provider: "claude" | "codex" | "auto" | "pi" } | { mode: "existing-session" };
-  output:
-    | { kind: "json-records"; validator: "json-records"; ids: string[]; requiredFields: string[] }
-    | { kind: "text"; maxBytes: number; format: string }
-    | { kind: "coding-artifact"; repositoryId: string; allowedPaths: string[]; requirePullRequest?: boolean };
+  output: { kind: "text"; maxBytes: number; format: string; expectedMarker: string };
 }
 
 export class JobInputError extends Error {
@@ -64,7 +61,7 @@ function parseTask(raw: unknown): JobTaskInput {
   if (!Array.isArray(raw.dependsOn) || raw.dependsOn.length > 8) throw new JobInputError("dependsOn must be an array of at most 8 task IDs");
   const dependsOn = raw.dependsOn.map((v) => id(v, "dependency"));
   if (new Set(dependsOn).size !== dependsOn.length || dependsOn.includes(taskId)) throw new JobInputError("dependencies must be unique and cannot include the task itself");
-  if (!Array.isArray(raw.scopeKeys) || raw.scopeKeys.length > 32) throw new JobInputError("scopeKeys must be an array of at most 32 scopes");
+  if (!Array.isArray(raw.scopeKeys) || !raw.scopeKeys.length || raw.scopeKeys.length > 32) throw new JobInputError("scopeKeys must contain 1–32 scopes");
   const scopeKeys = raw.scopeKeys.map(scopeKey);
   if (new Set(scopeKeys).size !== scopeKeys.length) throw new JobInputError("scopeKeys must be unique");
   let inputRef: string | undefined;
@@ -81,38 +78,18 @@ function parseTask(raw: unknown): JobTaskInput {
   if (!object(raw.execution)) throw new JobInputError("execution must be an object");
   let execution: JobTaskInput["execution"];
   if (raw.execution.mode === "fresh") {
-    only(raw.execution, ["mode", "provider"], "execution");
-    if (!["claude", "codex", "auto", "pi"].includes(String(raw.execution.provider))) throw new JobInputError("fresh execution provider is unsupported");
-    execution = { mode: "fresh", provider: raw.execution.provider as "claude" | "codex" | "auto" | "pi" };
+    throw new JobInputError("the current supervisor supports registered existing sessions only");
   } else if (raw.execution.mode === "existing-session") {
     only(raw.execution, ["mode"], "execution");
     execution = { mode: "existing-session" };
   } else throw new JobInputError("execution.mode must be fresh or existing-session");
 
-  if (!object(raw.output)) throw new JobInputError("output must be a tagged object");
-  let output: JobTaskInput["output"];
-  if (raw.output.kind === "json-records") {
-    only(raw.output, ["kind", "validator", "ids", "requiredFields"], "output");
-    if (raw.output.validator !== "json-records" || !Array.isArray(raw.output.ids) || !raw.output.ids.length || raw.output.ids.length > 500 || !Array.isArray(raw.output.requiredFields) || raw.output.requiredFields.length > 64) throw new JobInputError("json-records requires bounded ids and requiredFields");
-    const ids = raw.output.ids.map((v) => str(v, "output id", 256));
-    const requiredFields = raw.output.requiredFields.map((v) => str(v, "required field", 128));
-    if (new Set(ids).size !== ids.length || new Set(requiredFields).size !== requiredFields.length) throw new JobInputError("JSON output ids and fields must be unique");
-    output = { kind: "json-records", validator: "json-records", ids, requiredFields };
-  } else if (raw.output.kind === "text") {
-    only(raw.output, ["kind", "maxBytes", "format"], "output");
-    if (!Number.isInteger(raw.output.maxBytes) || Number(raw.output.maxBytes) < 1 || Number(raw.output.maxBytes) > 32_768) throw new JobInputError("text maxBytes must be between 1 and 32768");
-    output = { kind: "text", maxBytes: Number(raw.output.maxBytes), format: str(raw.output.format, "text format", 64) };
-  } else if (raw.output.kind === "coding-artifact") {
-    only(raw.output, ["kind", "repositoryId", "allowedPaths", "requirePullRequest"], "output");
-    if (!Array.isArray(raw.output.allowedPaths) || !raw.output.allowedPaths.length || raw.output.allowedPaths.length > 100) throw new JobInputError("coding-artifact requires 1–100 allowed paths");
-    const allowedPaths = raw.output.allowedPaths.map((p) => {
-      if (typeof p !== "string") throw new JobInputError("allowedPaths must contain strings");
-      return scopeKey(`path:${p}`).slice(5);
-    });
-    if (new Set(allowedPaths).size !== allowedPaths.length) throw new JobInputError("allowedPaths must be unique");
-    if (typeof raw.output.requirePullRequest !== "undefined" && typeof raw.output.requirePullRequest !== "boolean") throw new JobInputError("requirePullRequest must be boolean");
-    output = { kind: "coding-artifact", repositoryId: id(raw.output.repositoryId, "repositoryId"), allowedPaths, requirePullRequest: raw.output.requirePullRequest as boolean | undefined };
-  } else throw new JobInputError("output.kind must be json-records, text, or coding-artifact");
+  if (!object(raw.output) || raw.output.kind !== "text") throw new JobInputError("the current supervisor supports bounded text output only");
+  only(raw.output, ["kind", "maxBytes", "format", "expectedMarker"], "output");
+  if (!Number.isInteger(raw.output.maxBytes) || Number(raw.output.maxBytes) < 1 || Number(raw.output.maxBytes) > 32_768) throw new JobInputError("text maxBytes must be between 1 and 32768");
+  const expectedMarker = str(raw.output.expectedMarker, "expectedMarker", 256);
+  if (/[\r\n\0]/.test(expectedMarker) || expectedMarker !== expectedMarker.trim()) throw new JobInputError("expectedMarker must be a single exact, trimmed line of at most 256 characters");
+  const output: JobTaskInput["output"] = { kind: "text", maxBytes: Number(raw.output.maxBytes), format: str(raw.output.format, "text format", 64), expectedMarker };
   return { taskId, dependsOn, scopeKeys, inputRef, inputSha256, instructions, execution, output };
 }
 
@@ -161,18 +138,14 @@ export const JOB_TOOL_DEFINITIONS = [
     tasks: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false,
       required: ["taskId", "dependsOn", "scopeKeys", "instructions", "execution", "output"],
       properties: {
-        taskId: jobKey, dependsOn: { type: "array", maxItems: 8, items: jobKey }, scopeKeys: { type: "array", maxItems: 32, uniqueItems: true, items: { type: "string", maxLength: 512 } },
+        taskId: jobKey, dependsOn: { type: "array", maxItems: 8, items: jobKey }, scopeKeys: { type: "array", minItems: 1, maxItems: 32, uniqueItems: true, items: { type: "string", maxLength: 512 } },
         inputRef: { type: "string", minLength: 1, maxLength: 2048 }, inputSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
         instructions: { type: "string", minLength: 1, maxLength: 16384 },
-        execution: { oneOf: [
-          { type: "object", additionalProperties: false, required: ["mode", "provider"], properties: { mode: { const: "fresh" }, provider: { enum: ["claude", "codex", "auto", "pi"] } } },
-          { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "existing-session" } } },
-        ] },
-        output: { oneOf: [
-          { type: "object", additionalProperties: false, required: ["kind", "validator", "ids", "requiredFields"], properties: { kind: { const: "json-records" }, validator: { const: "json-records" }, ids: { type: "array", minItems: 1, maxItems: 500, uniqueItems: true, items: { type: "string", maxLength: 256 } }, requiredFields: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "string", maxLength: 128 } } } },
-          { type: "object", additionalProperties: false, required: ["kind", "maxBytes", "format"], properties: { kind: { const: "text" }, maxBytes: { type: "integer", minimum: 1, maximum: 32768 }, format: { type: "string", minLength: 1, maxLength: 64 } } },
-          { type: "object", additionalProperties: false, required: ["kind", "repositoryId", "allowedPaths"], properties: { kind: { const: "coding-artifact" }, repositoryId: jobKey, allowedPaths: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", minLength: 1, maxLength: 512 } }, requirePullRequest: { type: "boolean" } } },
-        ] },
+        execution: { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "existing-session" } } },
+        output: { type: "object", additionalProperties: false, required: ["kind", "maxBytes", "format", "expectedMarker"], properties: {
+          kind: { const: "text" }, maxBytes: { type: "integer", minimum: 1, maximum: 32768 },
+          format: { type: "string", minLength: 1, maxLength: 64 }, expectedMarker: { type: "string", minLength: 1, maxLength: 256, pattern: "^[^\\r\\n]+$" },
+        } },
       } } },
   }, ["schemaVersion", "jobId", "idempotencyKey", "projectId", "eligibleAccountIds", "tasks"]),
   tool("job_status", "Read one job's state for an authorized project.", { projectId: jobKey, jobId: jobKey }, ["projectId", "jobId"]),
