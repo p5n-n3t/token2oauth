@@ -656,7 +656,7 @@ class JobRegistry:
                 return None
             if self.repository is not None:
                 external = 0
-                for attempt_row in db.execute("SELECT data FROM attempts WHERE session=? AND released_at IS NULL", (session_id,)):
+                for attempt_row in db.execute("SELECT data FROM attempts WHERE (account=? OR session=?) AND released_at IS NULL", (op["account"], session_id)):
                     identity = json.loads(attempt_row["data"] or "{}")
                     if identity.get("r21Assignment") == op["assignment"] and identity.get("r21TaskId") == op["task_id"]:
                         continue
