@@ -248,3 +248,72 @@ test("cached client revalidates enabled state before each call and token rotatio
   assert.equal(factoryCalls, 2);
   assert.equal(requestCalls, 2);
 });
+
+test("recent transcript projection preserves the newest assistant marker and timestamp, not old tool blobs", async () => {
+  const history = [
+    { role: "tool", timestamp: "2026-10-10T10:00:00Z", content: "old-tool-payload-".repeat(50_000) },
+    ...Array.from({ length: 140 }, (_, index) => ({ role: "user", timestamp: `2026-10-10T10:${String(index % 60).padStart(2, "0")}:00Z`, content: `older-${index}` })),
+    { role: "assistant", timestamp: "2026-10-10T11:59:59Z", content: "TASK_COMPLETE: current dispatch finished" },
+  ];
+  const adapter = new LightSprintJobsAdapter(store(), ACCOUNT_ID, {
+    clientFactory: clientFactory(async () => ok({ messages: history, unrelated: "metadata" })),
+  });
+  const result = await adapter.sessionTranscript(SESSION_ID);
+  const transcript = result.value;
+  const latest = transcript.messages[transcript.latestAssistantIndex];
+  assert.equal(transcript.latestAssistantComplete, true);
+  assert.equal(latest.role, "assistant");
+  assert.equal(latest.timestamp, "2026-10-10T11:59:59Z");
+  assert.equal(latest.content, "TASK_COMPLETE: current dispatch finished");
+  assert.ok(transcript.omittedMessageCount > 0);
+  assert.equal(transcript.omittedToolContentCount, 1);
+  assert.equal(JSON.stringify(transcript).includes("tool_payload"), false);
+  assert.ok(Buffer.byteLength(JSON.stringify(transcript), "utf8") <= 256 * 1024);
+  assert.equal(JSON.stringify(transcript).includes("old-tool-payload"), false);
+});
+
+test("oversized newest assistant message is incomplete and never exposed as a truncated marker", async () => {
+  const oversized = `TASK_COMPLETE:${"x".repeat(60_000)}`;
+  const adapter = new LightSprintJobsAdapter(store(), ACCOUNT_ID, {
+    clientFactory: clientFactory(async () => ok({ messages: [
+      { role: "assistant", timestamp: "2026-10-10T12:00:00Z", content: oversized },
+    ] })),
+  });
+  const transcript = (await adapter.sessionTranscript(SESSION_ID)).value;
+  const latest = transcript.messages[transcript.latestAssistantIndex];
+  assert.equal(transcript.latestAssistantComplete, false);
+  assert.equal(transcript.incomplete, true);
+  assert.equal(latest.timestamp, "2026-10-10T12:00:00Z");
+  assert.equal(latest.contentOmitted, "oversized");
+  assert.equal(latest.complete, false);
+  assert.equal(Object.hasOwn(latest, "content"), false);
+  assert.equal(JSON.stringify(transcript).includes("TASK_COMPLETE:"), false);
+});
+
+test("unknown transcript shape is a bounded preview and cannot claim a completion message", async () => {
+  const adapter = new LightSprintJobsAdapter(store(), ACCOUNT_ID, {
+    clientFactory: clientFactory(async () => ok({ entries: [{ text: "legacy-shape".repeat(100_000) }] })),
+  });
+  const transcript = (await adapter.sessionTranscript(SESSION_ID)).value;
+  assert.equal(transcript.shape, "unknown");
+  assert.equal(transcript.truncated, true);
+  assert.equal(transcript.incomplete, true);
+  assert.equal(transcript.latestAssistantComplete, false);
+  assert.ok(Buffer.byteLength(transcript.preview, "utf8") <= 8 * 1024);
+});
+
+test("wire response above the existing byte limit returns an explicit bounded error", async () => {
+  let requests = 0;
+  const fetch = async (_url, init) => {
+    requests += 1;
+    const rpc = JSON.parse(init.body);
+    if (rpc.method === "initialize") return new Response(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
+    if (rpc.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: { content: [{ type: "text", text: "x".repeat(1_100_000) }] } }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const adapter = new LightSprintJobsAdapter(store(), ACCOUNT_ID, { fetch });
+  const result = await adapter.sessionTranscript(SESSION_ID);
+  assert.equal(result.classification, "rejected");
+  assert.equal(result.reason, "response_too_large");
+  assert.equal(requests, 3);
+});
