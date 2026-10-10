@@ -152,6 +152,44 @@ test("observe_session returns only the newest bounded assistant result after dis
   assert.equal(typeof posted.result.assistantAt, "number");
 });
 
+test("observe_session preserves complete assistant text longer than the identifier limit", async () => {
+  const dispatchAt = Date.parse("2026-10-10T00:00:00Z") / 1_000;
+  const fullText = `EXPECTED ${"x".repeat(3_000)}`;
+  const observation = pythonObservation("long-observe", "account-a", dispatchAt);
+  let posted;
+  const bridge = { async request(_method, route, body) {
+    if (route.endsWith("/claim")) return observation;
+    posted = body; return {};
+  } };
+  const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id, {
+    sessionTranscript: async () => ok(id, { shape: "messages", latestAssistantIndex: 0, latestAssistantComplete: true,
+      messages: [{ role: "assistant", content: fullText, timestamp: "2026-10-10T00:02:00Z", complete: true }] }),
+  }), isAccountEligible: () => true, workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
+  worker.start(); await until(() => posted); await worker.stop();
+  assert.equal(posted.outcome, "accepted");
+  assert.equal(posted.result.assistantText, fullText);
+});
+
+test("observe_session omits oversized assistant output using a UTF-8 byte bound", async () => {
+  const dispatchAt = Date.parse("2026-10-10T00:00:00Z") / 1_000;
+  // 10,923 three-byte characters exceed 32 KiB despite having fewer than 32,768 JS chars.
+  const tooLarge = `EXPECTED${"€".repeat(10_923)}`;
+  const observation = pythonObservation("oversize-observe", "account-a", dispatchAt);
+  let posted;
+  const bridge = { async request(_method, route, body) {
+    if (route.endsWith("/claim")) return observation;
+    posted = body; return {};
+  } };
+  const worker = createJobWorker({ bridge, adapterFactory: (id) => adapter(id, {
+    sessionTranscript: async () => ok(id, { shape: "messages", latestAssistantIndex: 0, latestAssistantComplete: true,
+      messages: [{ role: "assistant", content: tooLarge, timestamp: "2026-10-10T00:02:00Z", complete: true }] }),
+  }), isAccountEligible: () => true, workerId: "worker-test", allowedModels: ["gpt-6-luna"], maxConcurrent: 1 });
+  worker.start(); await until(() => posted); await worker.stop();
+  assert.equal(posted.outcome, "accepted");
+  assert.equal("assistantText" in posted.result, false);
+  assert.equal("assistantAt" in posted.result, false);
+});
+
 test("observe_session does not fall back to an older complete answer when the latest is incomplete", async () => {
   const dispatchAt = Date.parse("2026-10-10T00:00:00Z") / 1_000;
   for (const [index, latestAssistantComplete, messageComplete] of [[0, false, false], [1, true, false], [2, false, true]]) {
