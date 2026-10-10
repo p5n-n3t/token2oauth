@@ -17,7 +17,7 @@ test("capacity bars require a known positive denominator and show exact values",
   const html = renderSupervisorDashboard({ providers: [{ id: "known", label: "Known", status: "ready", capacity: { used: 4, limit: 10, unit: "jobs" }, accounts: [{ id: "unknown", label: "Unknown", status: "ready", quota: { used: 3 } }] }] });
   assert.match(html, /4 \/ 10 jobs/);
   assert.match(html, /aria-valuenow="4"/);
-  assert.match(html, /Unknown denominator/);
+  assert.match(html, /Limit not reported/);
   assert.equal((html.match(/role="meter"/g) || []).length, 1);
 });
 
@@ -43,8 +43,8 @@ test("search, severity and pause filters apply to bounded local event data", () 
 
 test("empty/loading/error states are explicit, records are bounded, and no write controls are invented", () => {
   const loading = renderSupervisorDashboard({ state: "loading", jobs: Array.from({ length: 5 }, (_, i) => ({ id: `j${i}`, status: "queued" })) }, { maxItems: 2 });
-  assert.match(loading, /Snapshot is loading/);
-  assert.match(loading, /No provider groups were supplied/);
+  assert.match(loading, /Loading operations data/);
+  assert.match(loading, /No provider groups are available/);
   assert.equal((loading.match(/<code>j\d<\/code>/g) || []).length, 2);
   assert.doesNotMatch(loading, /Pause all|Resume|Retry job|<form[^>]*method="post"/i);
   const errored = renderSupervisorDashboard({ state: "error" });
@@ -120,4 +120,36 @@ test("trusted snapshot normalization preserves absent observations as unknown", 
   assert.equal(snapshot.events, undefined);
   assert.equal(snapshot.supervisor, undefined);
   assert.equal(snapshot.orchestrator, undefined);
+});
+
+test("responsive layout contains intrinsic mobile widths and wraps long identifiers", () => {
+  const html = renderSupervisorDashboard({ providers: [{ id: "provider-" + "x".repeat(120), label: "Provider", status: "ready" }] });
+  const style = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] || "";
+  assert.match(style, /grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(style, /\.rail nav\{[^}]*width:100%;min-width:0;max-width:100%;overflow-x:auto/);
+  assert.match(style, /summary\{max-width:100%;overflow-wrap:anywhere\}/);
+  assert.match(style, /\.filter label\{[^}]*min-width:0;flex:1 1 145px\}/);
+  assert.match(style, /input,select\{[^}]*width:100%;max-width:100%;min-width:0/);
+  assert.doesNotMatch(style, /overflow-x\s*:\s*hidden/);
+  assert.match(html, /provider-x{20,}/);
+});
+
+test("Python assignment receipts normalize into visible jobs without fabricating provider data", () => {
+  const snapshot = normalizeSupervisorSnapshot({
+    assignments: [{ assignmentId: "batch-1", projectId: "project-1", state: "queued", revision: 3, taskCount: 2 }],
+    total: 1,
+    offset: 0,
+    hasMore: false,
+  });
+  assert.equal(snapshot.providers, undefined);
+  assert.equal(snapshot.jobs[0].id, "batch-1");
+  assert.equal(snapshot.jobs[0].status, "queued");
+  assert.equal(snapshot.jobs[0].taskCount, 2);
+  assert.equal(snapshot.jobs[0].revision, 3);
+  assert.equal(snapshot.jobs[0].workspace, undefined);
+  const html = renderSupervisorDashboard(snapshot);
+  assert.match(html, /Assignment batch-1/);
+  assert.match(html, /2 tasks · revision 3/);
+  assert.match(html, /No provider groups are available/);
+  assert.doesNotMatch(html, /snapshot supplied|no actions are implied|unknown denominator/i);
 });
