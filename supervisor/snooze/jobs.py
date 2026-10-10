@@ -24,6 +24,12 @@ MAX_PAGE = 200
 MUTATING_KINDS = {"create_task", "patch_task", "launch_task", "chat_session", "cancel_session"}
 OPERATION_KINDS = {"observe_session", "chat_session", "cancel_session"}
 USAGE_KEYS = {"reportedSessionCostUsd", "promptCount", "budgetUsed", "maxBudget", "fundingSource", "sandboxTier"}
+# Node job-worker.ts returns these only on the chat_session path before
+# mutationStarted is set. A rejected outcome alone is never proof of no dispatch.
+SAFE_CHAT_PREFLIGHT_REJECTIONS = {
+    "account_identity_mismatch", "invalid_operation_input",
+    "worker_stopping_or_lease_insufficient", "session_not_sendable", "account_unavailable_or_stopping",
+}
 ASSIGNMENT_KEYS = {"schemaVersion", "assignmentId", "idempotencyKey", "projectId", "eligibleAccountIds", "tasks"}
 ASSIGNMENT_OPTIONAL_KEYS = {"ownerPrincipalId", "clientId", "maxWorkers"}
 TASK_KEYS = {"taskId", "dependsOn", "scopeKeys", "instructions", "execution", "output"}
@@ -855,6 +861,12 @@ class JobRegistry:
                 if result.get("sessionId"):
                     db.execute("UPDATE job_tasks SET session_id=? WHERE assignment=? AND task_id=? AND generation=?",
                                (result["sessionId"], op["assignment"], op["task_id"], op["generation"]))
+            if outcome == "rejected" and op["kind"] == "chat_session" and error_class in SAFE_CHAT_PREFLIGHT_REJECTIONS:
+                # These explicit worker classes prove dispatch was not attempted.
+                # Keep observe failures, post-send rejections, and generic errors reserved.
+                db.execute("UPDATE job_tasks SET released_at=? WHERE assignment=? AND task_id=? AND generation=? AND released_at IS NULL",
+                           (when, op["assignment"], op["task_id"], op["generation"]))
+                db.execute("UPDATE attempts SET released_at=? WHERE id=? AND released_at IS NULL", (when, op["attempt_id"]))
             db.execute("UPDATE job_tasks SET state=? WHERE assignment=? AND task_id=? AND generation=?",
                        (state, op["assignment"], op["task_id"], op["generation"]))
             if state == "complete":
